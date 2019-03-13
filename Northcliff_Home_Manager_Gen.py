@@ -1,4 +1,4 @@
-#Northcliff Home Manager - 6.0-Gen First OOP Release Removing blind codes
+#Northcliff Home Manager - 6.2-Gen
 #!/usr/bin/env python
 
 import paho.mqtt.client as mqtt
@@ -203,7 +203,7 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
         self.flood_state_format = {'name': 'Flood', 'service': 'LeakSensor'}
         self.flood_state_characteristic = 'LeakDetected'
         self.flood_battery_characteristic = 'StatusLowBattery'
-        self.auto_blind_override_button_format = {'name': ' Blinds', 'service_name': 'Auto Blind Override', 'characteristic': 'On'}
+        self.auto_blind_override_button_format = {'service_name': 'Auto Blind Override', 'characteristic': 'On'}
         self.aircon_thermostat_format = {'name': 'Aircon', 'service': 'Thermostat'} # To do. Add ability to manage multiple aircons
         self.aircon_thermostat_characteristics = {'Mode': 'TargetHeatingCoolingState', 'Current Temperature': 'CurrentTemperature', 'Target Temperature':'TargetTemperature'}
         self.aircon_thermostat_mode_map = {0: 'Off', 1: 'Heat', 2: 'Cool'}
@@ -494,7 +494,7 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
     def reset_auto_blind_override_button(self, blind_room):
         #print('Homebridge: Reset Auto Blind Override Button', blind_room)
         homebridge_json = self.auto_blind_override_button_format
-        homebridge_json['name'] = blind_room + self.auto_blind_override_button_format['name']
+        homebridge_json['name'] = blind_room
         homebridge_json['value'] = False
         homebridge_payload = json.dumps(homebridge_json)
         # Publish homebridge payload with button state off
@@ -892,9 +892,9 @@ class MultisensorClass(object):
         if abs(light_level - self.sensor_types_with_value['Light Level']) >= 2: #Only update if difference is >= 2
             self.sensor_types_with_value['Light Level'] = light_level
             homebridge.update_light_level(self.name, light_level)
-        if self.blind_sensor['Blind Control'] == True: # Check if this light sensor is used to control a window blind
-            mgr.call_room_sunlight_control = {'State': True, 'Blind': self.blind_sensor['Blind Name'], 'Light Level': light_level}
-            print ('Triggered Blind Light Sensor', mgr.call_room_sunlight_control)            
+            if self.blind_sensor['Blind Control'] == True: # Check if this light sensor is used to control a window blind
+                mgr.call_room_sunlight_control = {'State': True, 'Blind': self.blind_sensor['Blind Name'], 'Light Level': light_level}
+                print ('Triggered Blind Light Sensor', mgr.call_room_sunlight_control)            
         
     def process_motion(self, parsed_json):
         motion_value =  int(parsed_json['svalue1'])
@@ -1590,13 +1590,13 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
         already_opened = False
         while count < delay:
             # Check if there's been a change in door state and flag in door_state_changed
-            for door in self.window_blind_config['door_state_change']:
+            for door in self.window_blind_config['blind_doors']:
                 # If the door state changed and it's now open
-                if self.window_blind_config['door_state_change'][door] == True and door_open_dictionary[door] == 1:
+                if self.window_blind_config['blind_doors'][door]['door_state_changed'] == True and self.window_blind_config['blind_doors'][door]['door_state'] == 'Open':
                     door_opened = True
             if door_opened == True:
                 if already_opened == False:
-                    print_update(door + ' Opened while blind is closing. Door blinds now opening on ')
+                    mgr.print_update(door + ' Opened while blind is closing. Door blinds now opening on ')
                     already_opened = True
                     self.door_blind_override = True
                     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
