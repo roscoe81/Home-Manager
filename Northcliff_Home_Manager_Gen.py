@@ -1,4 +1,4 @@
-#Northcliff Home Manager - 6.2-Gen
+#Northcliff Home Manager - 6.4 Gen
 #!/usr/bin/env python
 
 import paho.mqtt.client as mqtt
@@ -1388,7 +1388,7 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                         # 3 or 4 to avoid blind flapping (i.e. add hysteresis)
                         if self.previous_high_sunlight < 3:
                             if door_open == False: # If both doors closed, all blinds to 50%
-                                print_blind_change, self.window_blind_config['status'] = all_blinds_venetian(self.window_blind_config)
+                                print_blind_change, self.window_blind_config['status'] = self.all_blinds_venetian(self.window_blind_config)
                             else: # Open door blinds and set window blinds to 50% if at least one door is open
                                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                                     s.connect((self.blind_ip_address, self.blind_port))
@@ -1446,8 +1446,8 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                     if self.auto_override == False: # Only change blinds if not overriden
                         if self.previous_high_sunlight > 2: # If the previous sunlight level was either 3 or 4
                             if door_open == False: # If both doors closed, all blinds to venetian state
-                                print_blind_change, self.window_blind_config['status'] = all_blinds_venetian(self.window_blind_config)
-                            else: # Open door blinds and set window blinds to ventian state if at least one door is open
+                                print_blind_change, self.window_blind_config['status'] = self.all_blinds_venetian(self.window_blind_config)
+                            else: # Open door blinds and set window blinds to venetian state if at least one door is open
                                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                                     s.connect((self.blind_ip_address, self.blind_port))
                                     s.sendall(self.window_blind_config['blind commands']['up All Doors']) # Raise door blinds
@@ -1467,11 +1467,11 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                                 self.window_blind_config['status']['All Blinds'] = 'Open'
                         else: # If the previous high sunlight level was 0, 1 or 2
                             if current_blind_temp_threshold == True: # If the outside temperature is outside the pre-set thresholds
-                                if door_open == False: # All blinds to venetina state if the outside temps are outside the pre-set thresholds and the doors are closed.
+                                if door_open == False: # All blinds to venetian state if the outside temps are outside the pre-set thresholds and the doors are closed.
                                     print('All blinds set to venetian state because the outdoor temperature is now outside the pre-set thresholds with doors closed')
                                     print('Pre-set upper temperature threshold is', self.window_blind_config['high_temp_threshold'], 'degrees', 'Pre-set lower temperature limit is', self.window_blind_config['low_temp_threshold'], 'degrees',
                                           'Current temperature is', current_temperature, 'degrees')
-                                    print_blind_change, self.window_blind_config['status'] = all_blinds_venetian(self.window_blind_config)
+                                    print_blind_change, self.window_blind_config['status'] = self.all_blinds_venetian(self.window_blind_config)
                                 else: # Do nothing if the doors are open
                                     print_blind_change = False # Don't print a change of blind position
                             else: # If the outside temperature is now within the pre-set thresholds
@@ -1492,7 +1492,7 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                             print('All blinds set to Venetian because the outdoor temperature is outside the pre-set thresholds with the doors closed')
                             print('Pre-set upper temperature threshold is', self.window_blind_config['high_temp_threshold'], 'Pre-set lower temperature threshold is', self.window_blind_config['low_temp_threshold'],
                                    'Current temperature is', current_temperature, 'degrees')
-                            print_blind_change, self.window_blind_config['status'] = all_blinds_venetian(self.window_blind_config)
+                            print_blind_change, self.window_blind_config['status'] = self.all_blinds_venetian(self.window_blind_config)
                         else: # Raise all blinds if the outside temperature is well within the pre-set thresholds or the doors are opened.
                             if current_blind_temp_threshold == True and door_open == True:
                                 print('Opening all blinds due to doors being opened, even though the outdoor temperature is outside the pre-set thresholds')       
@@ -1596,7 +1596,7 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                     door_opened = True
             if door_opened == True:
                 if already_opened == False:
-                    mgr.print_update(door + ' Opened while blind is closing. Door blinds now opening on ')
+                    mgr.print_update(door + ' opened while blind is closing. Door blinds now opening on ')
                     already_opened = True
                     self.door_blind_override = True
                     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
