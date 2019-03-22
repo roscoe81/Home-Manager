@@ -11,7 +11,7 @@ The [Functional Overview](https://github.com/roscoe81/Home-Manager/blob/master/D
 
 ## Aircon Controller
 This is a [controller](https://github.com/roscoe81/Aircon-Controller) for a Mitsubishi air conditioner (Model FDC508HES3) to provide mqtt control of the airconditioner using the serial communications link that runs between Mitsubishi's RCD-H-E remote control unit and the CNB port on the air conditioner's control board. Also provides the ability to control a damper so that airflow can be directed to the correct air conditioning zone. An inclinometer is provided for the damper in order to detect its position and control the air flow between zones with greater precision. This Home Manager code captures the actual temperatures of each room, compares those temperatures to desired temperature levels and controls the air conditioner and damper to align the desired and actual temperatures. Room temperatures can be set and monitored by the Apple Home App on an iOS device or via Domoticz.
-![Aircon Home Screenshot](https://github.com/roscoe81/Home-Manager/blob/roscoe81-other-components/Documentation/76F68873-22C9-4C22-BA85-81DC36B0BF0A.png)
+![Aircon Home Screenshot](Home-Manager/Documentation/76F68873-22C9-4C22-BA85-81DC36B0BF0A.png)
 
 License
 This project is licensed under the MIT License - see the LICENSE.md file for details
