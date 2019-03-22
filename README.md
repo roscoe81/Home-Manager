@@ -30,7 +30,7 @@ In addition to the mode setting buttons and indicators, an mqtt interface is pro
 ![Doorbell Monitor Packaging](https://github.com/roscoe81/Doorbell-Monitor/blob/master/Schematics%20and%20Photos/IMG_3065.png)
 
 ### Doorbell Monitor Apple Home App Screenshot
-![Doorbell Monitor Screenshot](https://github.com/roscoe81/Home-Manager/blob/roscoe81-patch-1/Documentation/DF74AC2F-36ED-4782-8AA6-039EA844923C.jpeg)
+![Doorbell Monitor Screenshot](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/DF74AC2F-36ED-4782-8AA6-039EA844923C.jpeg)
 
 
 ## License
