@@ -15,7 +15,7 @@ This is a [controller](https://github.com/roscoe81/Aircon-Controller) for a Mits
 
 
 ## Doorbell-Monitor
-This [monitor] provides doorbell automation for a Fermax 4 + N Electronic Door Entry System 
+This [monitor](https://github.com/roscoe81/Doorbell-Monitor/blob/master/README.md) provides doorbell automation for a Fermax 4 + N Electronic Door Entry System 
 This project uses a Raspberry Pi to:
 * Auto Mode: Play a recoded message and open the door so that deliveries can be left in a secure location
 * Manual Mode: Places a Video SIP call to your mobile phone so that you can see the person at the door and converse with them
