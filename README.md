@@ -19,12 +19,12 @@ This is a [controller](https://github.com/roscoe81/Aircon-Controller) for a Mits
 ## Doorbell-Monitor
 This [monitor](https://github.com/roscoe81/Doorbell-Monitor/blob/master/README.md) provides doorbell automation for a Fermax 4 + N Electronic Door Entry System 
 This project uses a Raspberry Pi to:
-* Auto Mode: Play a recoded message and open the door so that deliveries can be left in a secure location
-* Manual Mode: Places a Video SIP call to your mobile phone so that you can see the person at the door and converse with them
+* Auto Mode: Play a recoded message when the doorbell is rung and open the door so that deliveries can be left in a secure location
+* Manual Mode: Places a Video SIP call to your mobile phone when the doorbell is rung so that you can see the person at the door and converse with them
 * Idle Mode: Normal door station functions take place.
-In all modes, a photo of the caller is taken and stored for later reference, as well as a pushover message that contains the photo. There is also the option to only allow Auto mode during certain hours of the day and days of the week and to disable auto mode if the apartment's door is open.
+In all modes, a photo of the caller is taken and stored for later reference and a pushover message is sent that contains the photo. There is also the option to only allow Auto mode during certain hours of the day and days of the week and to disable auto mode if the apartment's door is open.
 
-In addition to the mode setting buttons and indicators, an mqtt interface is provided to allow remote mode setting and to open the door manually.
+In addition to the mode setting buttons and indicators, an mqtt interface is provided in the doorbell monitor to allow the Home Manager to remotely set modes and to open the door manually.
 
 ### Doorbell Monitor Packaging
 ![Doorbell Monitor Packaging](https://github.com/roscoe81/Doorbell-Monitor/blob/master/Schematics%20and%20Photos/IMG_3065.png)
