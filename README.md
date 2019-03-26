@@ -57,10 +57,7 @@ The Home Manager interacts with Z-Wave sensors and devices via Domoticz and uses
 The Home Manager monitors and controls BlueAir air purifiers to capture air quality readings, capture settings and to control the air purifier settings through the Foobot API.
 
 ### BlueAir Air Purifier Apple Home App Screenshot
-
-
-
-
+![BlueAir Screenshot](https://github.com/roscoe81/Home-Manager/blob/BlueAir/Documentation/IMG_4349.png)
 
 ## License
 This project is licensed under the MIT License - see the LICENSE.md file for details
