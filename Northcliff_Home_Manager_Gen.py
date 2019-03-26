@@ -1,4 +1,4 @@
-#Northcliff Home Manager - 6.4 Gen
+#Northcliff Home Manager - 7.6 Gen
 #!/usr/bin/env python
 
 import paho.mqtt.client as mqtt
@@ -8,6 +8,7 @@ from datetime import datetime
 import string
 import json
 import socket
+import requests
 
 class NorthcliffHomeManagerClass(object):
     def __init__(self):
@@ -89,6 +90,8 @@ class NorthcliffHomeManagerClass(object):
         self.blind_control_door_opened = {'State': False, 'Blind': ''}
         # Identify the door that controls the doorbell "Auto Possible" mode
         self.doorbell_door = 'Entry'
+        # Set up air purifier dictionary with names, foobot device numbers and auto/manual flag.
+        self.air_purifier_names = {'Living': {'Foobot Device': 1, 'Auto': True}, 'Main': {'Foobot Device': 0, 'Auto': False}}
                    
     def on_connect(self, client, userdata, flags, rc):
         # Sets up the mqtt subscriptions. Subscribing in on_connect() means that if we lose the connection and reconnect then subscriptions will be renewed.
@@ -101,7 +104,7 @@ class NorthcliffHomeManagerClass(object):
         decoded_payload = str(msg.payload.decode("utf-8"))
         parsed_json = json.loads(decoded_payload)
         if msg.topic == self.homebridge_incoming_mqtt_topic: # If coming from homebridge
-            homebridge.capture_homebridge_buttons(parsed_json) # Capture the homrbridge button
+            homebridge.capture_homebridge_buttons(parsed_json) # Capture the homebridge button
         elif msg.topic == self.domoticz_incoming_mqtt_topic: # If coming from domoticz
             domoticz.process_device_data(parsed_json) # Process the domoticz device data
         elif msg.topic == self.garage_door_incoming_mqtt_topic: # If coming from the Garage Door Controller
@@ -124,6 +127,13 @@ class NorthcliffHomeManagerClass(object):
 
     def run(self): # The main Home Manager start-up, loop and shut-down code                          
         try:
+            # Capture Air Purifier readings and settings on startup and update homebridge
+            for name in self.air_purifier_names:
+                if self.air_purifier_names[name]['Auto'] == True: # Readings only come from auto units
+                    self.purifier_readings_update_time, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold = air_purifier[name].capture_readings()
+                    homebridge.update_air_quality(part_2_5, co2, voc, max_aqi, max_co2, co2_threshold) 
+                self.purifier_settings_update_time, mode, fan_speed, child_lock, led_brightness = air_purifier[name].capture_settings()
+                homebridge.set_air_purifier_state(name, mode, fan_speed, child_lock, led_brightness)    
             # Start up Aircons
             for aircon_name in mgr.aircon_config:
                 aircon[aircon_name].start_up()
@@ -136,9 +146,12 @@ class NorthcliffHomeManagerClass(object):
                 homebridge.update_temperature(name, multisensor[name].sensor_types_with_value['Temperature'])
                 homebridge.update_humidity(name, multisensor[name].sensor_types_with_value['Humidity'])
                 homebridge.update_light_level(name, multisensor[name].sensor_types_with_value['Light Level'])
-                homebridge.update_motion(name, multisensor[name].sensor_types_with_value['Motion'])              
+                homebridge.update_motion(name, multisensor[name].sensor_types_with_value['Motion'])
+            # Intialise Powerpoint states
+            for name in self.powerpoint_names_device_id:
+                homebridge.update_powerpoint_state(name, 0)
             while True: # The main Home Manager Loop
-                aircon['Aircon'].control_aircon() # Call the method that controls the aircon. To do: dd support for mutliple aircons
+                aircon['Aircon'].control_aircon() # Call the method that controls the aircon. To do: dAd support for mutliple aircons
                 # The following tests and method calls are here in the main code loop, rather than the on_message method to avoid time.sleep calls in the window blind object delaying incoming mqtt message handling
                 if self.call_room_sunlight_control['State'] == True: # If there's a new reading from the blind control light sensor
                     blind = self.call_room_sunlight_control['Blind'] # Identify the blind
@@ -148,7 +161,7 @@ class NorthcliffHomeManagerClass(object):
                     self.call_room_sunlight_control['State'] = False # Reset this flag because any light level update has now been actioned
                 if self.blind_control_door_opened['State'] == True: # If a blind control door has been opened
                     blind = self.blind_control_door_opened['Blind'] # Identify the blind that is controlled by the door
-                    light_level = self.call_room_sunlight_control['Light Level' ] # Capture the light level
+                    light_level = self.call_room_sunlight_control['Light Level'] # Capture the light level
                     window_blind_config = self.window_blind_config[blind] # Use the config for the relevant blind. That config contains the updated door states
                     window_blind[blind].room_sunlight_control(light_level, window_blind_config) # Call the blind's sunlight control method, passing the light level and blind config
                     self.blind_control_door_opened['State'] = False # Reset Door Opened Flag because any change of door state has now been actioned
@@ -157,6 +170,18 @@ class NorthcliffHomeManagerClass(object):
                     window_blind_config = self.window_blind_config[blind] # Use the config for the relevant blind
                     window_blind[blind].control_blinds(self.call_control_blinds, window_blind_config) # Call the blind's manual control method, passing the blind config
                     self.call_control_blinds['State'] = False # Reset Control Blinds Flag because any control blind request has now been actioned
+                purifier_readings_check_time = time.time()
+                if (purifier_readings_check_time - self.purifier_readings_update_time) >= 300: # Update air purifier readings if last update was >= 5 minutes ago
+                    for name in self.air_purifier_names:
+                        if self.air_purifier_names[name]['Auto'] == True:# Readings only come from auto units
+                            self.purifier_readings_update_time, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold = air_purifier[name].capture_readings()
+                            homebridge.update_air_quality(part_2_5, co2, voc, max_aqi, max_co2, co2_threshold)
+                purifier_settings_check_time = time.time()
+                if (purifier_settings_check_time - self.purifier_settings_update_time) >= 5: # Update air purifier settings if last update was >= 5 seconds ago
+                    for name in self.air_purifier_names:
+                        self.purifier_settings_update_time, mode, fan_speed, child_lock, led_brightness = air_purifier[name].capture_settings()
+                        homebridge.set_air_purifier_state(name, mode, fan_speed, child_lock, led_brightness)
+                  
         except KeyboardInterrupt:
             # Shut down Aircons
             for aircon_name in mgr.aircon_config:
@@ -220,6 +245,8 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
         for name in self.aircon_thermostat_names:
             self.aircon_button_type[name] = 'Thermostat Control' # To do. Add ability to manage multiple aircons
         self.window_blind_position_map = {'Open': 100, 'Venetian': 50, 'Closed': 0}
+        self.air_quality_format = {'name': 'Aircon Quality'}
+        self.air_purifier_format = {'name': 'Aircon Purifier', 'service' :'AirPurifier'}
 
     def capture_homebridge_buttons(self, parsed_json):
         if parsed_json['name'] == self.dimmer_format['name']: # If it's a dimmer button
@@ -234,6 +261,8 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
             self.process_garage_door_button(parsed_json)
         elif parsed_json['name'] == self.aircon_thermostat_format['name']: # If it's an aircon button. # To do. Add ability to manage multiple aircons
             self.process_aircon_button(parsed_json)
+        elif parsed_json['name'] == self.air_purifier_format['name']: # If it's an air purifier button.
+            self.process_air_purifier_button(parsed_json)
         else:
             print('Invalid homebridge button received:', parsed_json['name'])
             pass
@@ -347,12 +376,122 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
             print("Unknown Aircon Homebridge Message", str(parsed_json))
             time.sleep(0.1)
 
+    def process_air_purifier_button(self, parsed_json):
+        #print('Air Purifier Button', parsed_json)
+        purifier_name = parsed_json['service_name']
+        characteristic = parsed_json['characteristic']
+        value = parsed_json['value']
+        if characteristic == 'Active':
+            if value == 1:
+                air_purifier[purifier_name].active()
+            else:
+                air_purifier[purifier_name].inactive()
+        elif characteristic == 'TargetAirPurifierState':
+            if value == 0:
+                air_purifier[purifier_name].manual_mode()
+            else:
+                air_purifier[purifier_name].auto_mode()
+        elif characteristic == 'RotationSpeed':
+            if value == 0:
+                air_purifier[purifier_name].set_fan_speed("0")
+            elif value > 0 and value < 50:
+                air_purifier[purifier_name].set_fan_speed("1")
+            elif value >= 50 and value < 100:
+                air_purifier[purifier_name].set_fan_speed("2")
+            else:
+                air_purifier[purifier_name].set_fan_speed("3")
+        elif characteristic == 'LockPhysicalControls':
+            if value == 0:
+                lock = '0'
+            else:
+                lock = '1'
+            air_purifier[purifier_name].set_child_lock(lock)
+        elif characteristic == 'Brightness':
+            if parsed_json['service_name'] == 'Living Purifier':
+                purifier_name = 'Living'
+            else:
+                purifier_name = 'Main'
+            if value == 0:
+                air_purifier[purifier_name].set_led_brightness("0")
+            elif value > 0 and value < 40:
+                air_purifier[purifier_name].set_led_brightness("1")
+            elif value >= 40 and value < 60:
+                air_purifier[purifier_name].set_led_brightness("2")
+            elif value >= 60 and value < 80:
+                air_purifier[purifier_name].set_led_brightness("3")
+            else:
+                air_purifier[purifier_name].set_led_brightness("4")
+        elif characteristic == 'On':
+            if parsed_json['service_name'] == 'Living Purifier':
+                purifier_name = 'Living'
+            else:
+                purifier_name = 'Main'
+            if value == False:
+                air_purifier[purifier_name].set_led_brightness("0")
+            else:
+                air_purifier[purifier_name].set_led_brightness("4")
+        else:
+            print('Unknown Air Purifier Button', characteristic)
+
+    def set_air_purifier_state(self, name, mode, fan_speed, child_lock, led_brightness):
+        homebridge_json = self.air_purifier_format
+        homebridge_json['service_name'] = name
+        homebridge_json['characteristic'] = 'CurrentAirPurifierState'
+        if mode == 'auto' or fan_speed != '0':
+            homebridge_json['value'] = 2
+        else:
+            homebridge_json['value'] = 0
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['characteristic'] = 'Active'
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['characteristic'] = 'RotationSpeed'
+        if fan_speed == '3':
+            speed = 100
+        elif fan_speed == '2':
+            speed = 75
+        elif fan_speed == '1':
+            speed = 25
+        else:
+            speed = 0
+        homebridge_json['value'] = speed
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['characteristic'] = 'TargetAirPurifierState'
+        if mode == 'auto':
+            homebridge_json['value'] = 1
+        else:
+            homebridge_json['value'] = 0
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['characteristic'] = 'LockPhysicalControls'
+        if child_lock == '1':
+            homebridge_json['value'] = 1
+        else:
+            homebridge_json['value'] = 0
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['characteristic'] = 'Brightness'
+        homebridge_json['service'] = 'Lightbulb'
+        homebridge_json['service_name'] = name + ' Purifier'
+        if led_brightness == '4':
+            brightness = 100
+        elif led_brightness == '3':
+            brightness = 70
+        elif led_brightness == '2':
+            brightness = 50
+        elif led_brightness == '1':
+            brightness = 20
+        else:
+            brightness = 0
+        homebridge_json['value'] = brightness   
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        if brightness == 0:
+           homebridge_json['characteristic'] = 'On'
+           homebridge_json['value'] = False
+           client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))       
+
     def switch_powerpoint(self, parsed_json):
         powerpoint_name = parsed_json['service_name']
         switch_state = parsed_json['value']
         # Call the on_off method for the relevant powerpoint object
         powerpoint[powerpoint_name].on_off(switch_state)
-
 
     def update_temperature(self, name, temperature):
         homebridge_json = self.temperature_format
@@ -471,7 +610,7 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
 
     def update_garage_door(self, state):
-        print('Homebridge: Update Garage Door', state)
+        #print('Homebridge: Update Garage Door', state)
         homebridge_json = self.garage_door_format
         if state =='Opened':
             mgr.print_update("Garage Door Opened on ")
@@ -500,7 +639,7 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
         # Publish homebridge payload with button state off
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
 
-    def reset_aircon_thermostats(self, thermostat_status): # Called on start-up to set all Homebridge sensors to "off", current temps to 1 degree and target temps to 21 degrees
+    def reset_aircon_thermostats(self, thermostat_status): # Called on start-up to set all Homebridge sensors to "off", current temps to 1 degree and target temps to 25 degrees
         # Initialise Thermostat functions
         homebridge_json = self.aircon_thermostat_format # To do. Add ability to manage multiple aircons
         for name in self.aircon_thermostat_names:
@@ -574,6 +713,36 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
             homebridge_json['service_name'] = blind
             homebridge_json['value'] = self.window_blind_position_map[window_blind_config['status'][blind]]
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+
+    def update_air_quality(self, part_2_5, co2, voc, aqi, max_co2, co2_threshold):
+        homebridge_json = self.air_quality_format
+        homebridge_json['service_name'] = 'Air Quality'
+        homebridge_json['characteristic'] = 'AirQuality'
+        homebridge_json['value'] = aqi
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['characteristic'] = 'PM2_5Density'
+        homebridge_json['value'] = part_2_5
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['characteristic'] = 'VOCDensity'
+        homebridge_json['value'] = voc
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['characteristic'] = 'CarbonDioxideLevel'
+        homebridge_json['value'] = co2
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) 
+        homebridge_json['service_name'] = 'CO2'
+        homebridge_json['characteristic'] = 'CarbonDioxideLevel'
+        homebridge_json['value'] = co2
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['characteristic'] = 'CarbonDioxideDetected'
+        if co2 < co2_threshold:
+            homebridge_json['value'] = 0
+        else:
+            homebridge_json['value'] = 1
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['characteristic'] = 'CarbonDioxidePeakLevel'
+        homebridge_json['value'] = max_co2
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+
                                                         
 class DomoticzClass(object): # Manages communications to and from the z-wave objects
     def __init__(self):
@@ -894,7 +1063,7 @@ class MultisensorClass(object):
             homebridge.update_light_level(self.name, light_level)
             if self.blind_sensor['Blind Control'] == True: # Check if this light sensor is used to control a window blind
                 mgr.call_room_sunlight_control = {'State': True, 'Blind': self.blind_sensor['Blind Name'], 'Light Level': light_level}
-                print ('Triggered Blind Light Sensor', mgr.call_room_sunlight_control)            
+                #print ('Triggered Blind Light Sensor', mgr.call_room_sunlight_control)            
         
     def process_motion(self, parsed_json):
         motion_value =  int(parsed_json['svalue1'])
@@ -1472,8 +1641,15 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                                     print('Pre-set upper temperature threshold is', self.window_blind_config['high_temp_threshold'], 'degrees', 'Pre-set lower temperature limit is', self.window_blind_config['low_temp_threshold'], 'degrees',
                                           'Current temperature is', current_temperature, 'degrees')
                                     print_blind_change, self.window_blind_config['status'] = self.all_blinds_venetian(self.window_blind_config)
-                                else: # Do nothing if the doors are open
-                                    print_blind_change = False # Don't print a change of blind position
+                                else: # Open door blinds if a door is open
+                                    print('Door blinds opening because a door has been opened while the last sunlight state before reaching level 2 was 0 or 1 and the outdoor temperature is still outside the pre-set thresholds')
+                                    print('Pre-set upper temperature threshold is', self.window_blind_config['high_temp_threshold'], 'degrees', 'pre-set lower temperature threshold is', self.window_blind_config['low_temp_threshold'], 'degrees',
+                                          'Current temperature is', current_temperature, 'degrees')
+                                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                                        s.connect((self.blind_ip_address, self.blind_port))
+                                        s.sendall(self.window_blind_config['blind commands']['up All Doors']) # Raise door blinds
+                                        data = s.recv(1024)
+                                    print_blind_change = True
                             else: # If the outside temperature is now within the pre-set thresholds
                                 if self.last_pre2_sunlight_state <= 1: # Open all blinds if the outside temperature is now within the pre-set thresholds and the algorithm has entered state 2 from states 0 or 1
                                     print('All blinds opening because the last sunlight state before reaching level 2 was 0 or 1 and the outdoor temperature is now 1 degree inside the pre-set thresholds')
@@ -1645,7 +1821,7 @@ class AirconClass(object):
         self.max_cooling_effectiveness = {name: 0.0 for name in self.aircon_log_items}
         self.min_cooling_effectiveness = {name: 9.9 for name in self.aircon_log_items}
         # Set up initial sensor data with a dictionary comprehension
-        self.thermostat_status = {name: {'Current Temperature': 1, 'Target Temperature': 21, 'Mode': 'Off', 'Active': 0} for name in self.thermostat_names}
+        self.thermostat_status = {name: {'Current Temperature': 1, 'Target Temperature': 25, 'Mode': 'Off', 'Active': 0} for name in self.thermostat_names}
         self.thermostat_mode_active_map = {'Off': 0, 'Heat': 1, 'Cool': 1}
         self.start_time = time.time()
         self.temperature_update_time = {name: self.start_time for name in self.indoor_zone}
@@ -2244,8 +2420,216 @@ class AirconClass(object):
         #print("dictionary data", room_string, data_field[start_required_data : end_required_data])
         return start_required_data, end_required_data
 
+class Foobot:
+    def __init__(self, apikey, username, password):
+        ## Minor adaptation to https://github.com/philipbl/pyfoobot to use the BlueAir homehost
+        ## Thanks to https://github.com/mylesagray/homebridge-blueair
+        
+        """Authenticate the username and password."""
+        self.username = username
+        self.password = password
+        self.session = requests.Session()
+        self.auth_header = {'Accept': 'application/json;charset=UTF-8',
+                            'X-API-KEY-TOKEN': apikey}
+        self.auth_header_1 = {'X-API-KEY-TOKEN': apikey}
+        self.foobot_url = 'https://api.foobot.io/'
+        blue_air_authorisation = self.session.get(self.foobot_url, headers=self.auth_header_1)
+        blue_air_authorisation_json = blue_air_authorisation.json()
+        homehost_request_url = self.foobot_url + '/v2/user/' + self.username + '/homehost/'
+        home_host = self.session.get(homehost_request_url, headers=self.auth_header_1)
+        self.BASE_URL = 'https://' + home_host.json() + '/v2'
+        token = self.login()
+        if token is None:
+            raise ValueError("Provided username or password is not valid.")
+        self.auth_header['X-AUTH-TOKEN'] = token
+
+    def login(self):
+        """Log into a foobot device."""
+        url = '{base}/user/{user}/login/'.format(base=self.BASE_URL,
+                                                 user=self.username)
+        req = self.session.get(url,
+                               auth=(self.username, self.password),
+                               headers=self.auth_header)
+        return req.headers['X-AUTH-TOKEN'] if req.text == "true" else None
+
+    def devices(self):
+        """Get list of foobot devices owned by logged in user."""
+        url = '{base}/owner/{user}/device/'.format(base=self.BASE_URL,
+                                                   user=self.username)
+        req = self.session.get(url, headers=self.auth_header)
+
+        def create_device(device):
+            """Helper to create a FoobotDevice based on a dictionary."""
+            return FoobotDevice(auth_header=self.auth_header,
+                                user_id=device['userId'],
+                                uuid=device['uuid'],
+                                name=device['name'],
+                                mac=device['mac'], base_url=self.BASE_URL)
+
+        return [create_device(device) for device in req.json()]
 
 
+class FoobotDevice:
+    ## Same code as https://github.com/philipbl/pyfoobot
+    """Represents a foobot device."""
+
+    def __init__(self, auth_header, user_id, uuid, name, mac, base_url):
+        """Create a foobot device instance used for getting data samples."""
+        self.auth_header = auth_header
+        self.user_id = user_id
+        self.uuid = uuid
+        self.name = name
+        self.mac = mac
+        self.BASE_URL = base_url
+        self.session = requests.Session()
+
+    def latest(self):
+        """Get latest sample from foobot device."""
+        url = '{base}/device/{uuid}/datapoint/{period}/last/{sampling}/'
+        url = url.format(base=self.BASE_URL,
+                         uuid=self.uuid,
+                         period=0,
+                         sampling=0)
+        req = self.session.get(url, headers=self.auth_header)
+        return req.json()
+
+    def data_period(self, period, sampling):
+        """Get a specified period of data samples."""
+        url = '{base}/device/{uuid}/datapoint/{period}/last/{sampling}/'
+        url = url.format(base=self.BASE_URL,
+                         uuid=self.uuid,
+                         period=period,
+                         sampling=sampling)
+
+        req = self.session.get(url, headers=self.auth_header)
+        return req.json()
+
+    def data_range(self, start, end, sampling):
+        """Get a specified range of data samples."""
+        url = '{base}/device/{uuid}/datapoint/{start}/{end}/{sampling}/'
+        url = url.format(base=self.BASE_URL,
+                         uuid=self.uuid,
+                         start=start,
+                         end=end,
+                         sampling=sampling)
+
+        req = self.session.get(url, headers=self.auth_header)
+        return req.json()
+
+class BlueAirClass(object):
+    ## Adds BlueAir control to Foobot and FoobotDevice Classes from https://github.com/philipbl/pyfoobot to use the BlueAir homehost
+    ## Thanks to https://github.com/mylesagray/homebridge-blueair
+    def __init__(self, name, air_purifier_devices, identifier):
+        self.base_url = fb.BASE_URL
+        self.session = requests.Session()
+        self.auto = identifier['Auto']
+        self.device = air_purifier_devices[identifier['Foobot Device']]
+        self.name = name
+        self.max_co2 = 0
+        self.air_readings = {}
+        self.air_reading_bands = {'part_2_5':[9, 30, 50, 150], 'co2': [500, 1000, 1600, 2000], 'voc': [200, 350, 450, 750], 'pol': [20, 45, 60, 80]}
+        self.co2_threshold = self.air_reading_bands['co2'][2]
+        self.air_purifier_settings = {}
+
+    def capture_readings(self): # Capture device readings
+        if self.auto == True: # Readings only come from auto units
+            self.readings_update_time = time.time()
+            latest_data = self.device.latest()
+            last_hour_data = self.device.data_period(3600, 0)
+            self.air_readings['part_2_5'] = latest_data['datapoints'][0][1]
+            self.air_readings['co2'] = latest_data['datapoints'][0][4]
+            if self.air_readings['co2'] > self.max_co2:
+                self.max_co2 = self.air_readings['co2']
+            self.air_readings['voc'] = latest_data['datapoints'][0][5]
+            self.air_readings['pol'] = latest_data['datapoints'][0][6]
+            max_aqi = 1
+            for reading in self.air_readings: # Check each air quality parameter's reading
+                for boundary in range(3): # Check each reading against its AQI boundary
+                    if self.air_readings[reading] >= self.air_reading_bands[reading][boundary]: # Find the boundary that the reading has exceeded 
+                        aqi = boundary + 2 # Convert the boundary to the AQI reading
+                        #print('Search Max AQI', aqi, reading, self.air_readings[reading])
+                        if aqi > max_aqi: # If this reading has the maximum AQI so far, make it the max AQI
+                            max_aqi = aqi
+                            max_reading = reading
+                            #print('Found Max AQI', max_aqi, max_reading, self.air_readings[max_reading])
+            return(self.readings_update_time, self.air_readings['part_2_5'], self.air_readings['co2'], self.air_readings['voc'], max_aqi, self.max_co2, self.co2_threshold)
+
+
+    def capture_settings(self): # Capture device settings
+        self.settings_update_time = time.time()
+        air_purifier_settings = self.get_device_settings()
+        #print('Air Purifier Settings for ', self.name, 'are', air_purifier_settings)
+        if self.auto == True: # Auto BlueAir units have mode and fan speed in different list locations from manual units
+            mode = air_purifier_settings[9]['currentValue']
+            fan_speed = air_purifier_settings[5]['currentValue']
+        else:
+            mode = air_purifier_settings[6]['currentValue']
+            fan_speed = air_purifier_settings[3]['currentValue']
+        child_lock = air_purifier_settings[2]['currentValue']
+        led_brightness = air_purifier_settings[1]['currentValue']
+        return (self.settings_update_time, mode, fan_speed, child_lock, led_brightness)
+              
+
+    def show_device_data(self): # Only used for debugging
+        print('Header:', self.device.auth_header, 'User ID:', self.device.user_id, 'uuid:', self.device.uuid, 'name:', self.device.name, self.device.mac, self.device.session)
+
+    def active(self):
+        if self.auto == False:
+            self.set_fan_speed('1')
+            
+    def inactive(self):
+        self.set_fan_speed('0')
+
+    def manual_mode(self):
+        if self.auto == True:
+            #print('Setting Manual Mode for the', self.device.name , 'Air Purifier')
+            url = self.base_url + '/device/' + self.device.uuid + '/attribute/mode/'
+            header = self.device.auth_header
+            uuid = self.device.uuid
+            body = {"currentValue": "manual", "scope": "device", "defaultValue": "auto", "name": "mode", "uuid": uuid}
+            response = self.session.post(url, headers=header, json=body)
+
+    def auto_mode(self):
+        if self.auto == True:
+            #print('Setting Auto Mode for the', self.device.name , 'Air Purifier')
+            url = self.base_url + '/device/' + self.device.uuid + '/attribute/mode/'
+            header = self.device.auth_header
+            uuid = self.device.uuid
+            body = {"currentValue": "auto", "scope": "device", "defaultValue": "auto", "name": "mode", "uuid": uuid}
+            response = self.session.post(url, headers=header, json=body)
+
+    def set_fan_speed(self, fan_speed):
+        #print('Setting Fan Speed to', fan_speed, 'for the', self.device.name + 'Air Purifier')
+        url = self.base_url + '/device/' + self.device.uuid + '/attribute/fanspeed/'
+        header = self.device.auth_header
+        uuid = self.device.uuid
+        body = {"currentValue": fan_speed, "scope": "device", "defaultValue": "1", "name": "fan_speed", "uuid": uuid}
+        response = self.session.post(url, headers=header, json=body)
+
+    def set_led_brightness(self, brightness):
+        #print('Setting Light Brightness for the', self.device.name , 'Air Purifier')
+        url = self.base_url + '/device/' + self.device.uuid + '/attribute/brightness/'
+        header = self.device.auth_header
+        uuid = self.device.uuid
+        body = {"currentValue": brightness, "scope": "device", "defaultValue": "4", "name": "brightness", "uuid": uuid}
+        response = self.session.post(url, headers=header, json=body)
+        
+    def set_child_lock(self, lock):
+        #print('Setting Child Lock for the', self.device.name , 'Air Purifier')
+        url = self.base_url + '/device/' + self.device.uuid + '/attribute/child_lock/'
+        header = self.device.auth_header
+        uuid = self.device.uuid
+        body = {"currentValue": lock, "scope": "device", "defaultValue": "0", "name": "child_lock", "uuid": uuid}
+        response = self.session.post(url, headers=header, json=body)
+
+    def get_device_settings(self):
+        url = '{base}/device/{uuid}/attributes/'
+        url = url.format(base=self.base_url, uuid=self.device.uuid)
+        req = self.session.get(url, headers=self.device.auth_header)
+        # print('Device Data for', self.name, 'is', req.json())
+        return req.json()
+
+            
 if __name__ == '__main__': # This is where to overall code kicks off
     # Create a Home Manager instance
     mgr = NorthcliffHomeManagerClass()
@@ -2272,7 +2656,13 @@ if __name__ == '__main__': # This is where to overall code kicks off
     # Use a dictionary comprehension to create a flood sensor instance for each flood sensor
     flood_sensor = {name: FloodSensorClass(name) for name in mgr.flood_sensor_names}
     # Create a Garage Door Controller instance
-    garage_door = GaragedoorClass(mgr.garage_door_outgoing_mqtt_topic)   
+    garage_door = GaragedoorClass(mgr.garage_door_outgoing_mqtt_topic)
+    # Create a Foobot instance
+    key = "<foobot_api_key>"
+    fb = Foobot(key, "<foobot_user_name>", "<foobot_user_password>")
+    air_purifier_devices = fb.devices() # Capture foobot device data
+    # Use a dictionary comprehension to create an air purifier instance for each air purifier
+    air_purifier = {name: BlueAirClass(name, air_purifier_devices, mgr.air_purifier_names[name]) for name in mgr.air_purifier_names}
     # Create and set up an mqtt instance                             
     client = mqtt.Client('home_manager')
     client.on_connect = mgr.on_connect
