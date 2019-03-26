@@ -3,10 +3,12 @@ This is a Raspberry Pi based Home Automation Manager. Utilises mosquitto, Homebr
 
 ## System Overview
 ![System Overview](https://github.com/roscoe81/Home-Manager/blob/BlueAir/Documentation/System%20Overview.png)
+
 The [System Overview](https://github.com/roscoe81/Home-Manager/blob/BlueAir/Documentation/Home%20Automation%20System%20Overview.pdf) shows the four Raspberry Pi based controllers that comprise the system, the mqtt messages that allow them to communicate with each other and the end devices that they manage.
 
 ## Home Manager Functional Overview
 ![Functional Overview](https://github.com/roscoe81/Home-Manager/blob/BlueAir/Documentation/Home%20Automation%20OOP%20Functional%20Overview.png)
+
 The [Functional Overview](https://github.com/roscoe81/Home-Manager/blob/BlueAir/Documentation/Home%20Automation%20OOP%20Functional%20Overview.pdf) outlines the Python objects of the Home Manager controller and how they interact with Domoticz, Homebridge and the three other controllers that comprise the overall system.
 
 ## Aircon Controller
