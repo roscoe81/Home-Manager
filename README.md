@@ -1,5 +1,5 @@
 # Home Manager
-This is a Raspberry Pi based Home Automation Manager. Utilises mosquitto, Homebridge, Homebridge-mqtt, Domoticz and the projects contained in my other GitHub repositories to automate airconditioning, doorbell, lighting, power outlets, flood sensors, door sensors, window blinds and a garage door opener.
+This is a Raspberry Pi based Home Automation Manager. It utilises mosquitto, Homebridge, Homebridge-mqtt, Domoticz and the projects contained in my other GitHub repositories to automate airconditioning, doorbell, lighting, power outlets, flood sensors, door sensors, window blinds and a garage door opener.
 
 ## System Overview
 ![System Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/System%20Overview.png)
