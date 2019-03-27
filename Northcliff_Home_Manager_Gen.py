@@ -1,4 +1,4 @@
-#Northcliff Home Manager - 7.6 Gen
+#Northcliff Home Manager - 7.7 Gen
 #!/usr/bin/env python
 
 import paho.mqtt.client as mqtt
@@ -131,7 +131,8 @@ class NorthcliffHomeManagerClass(object):
             for name in self.air_purifier_names:
                 if self.air_purifier_names[name]['Auto'] == True: # Readings only come from auto units
                     self.purifier_readings_update_time, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold = air_purifier[name].capture_readings()
-                    homebridge.update_air_quality(part_2_5, co2, voc, max_aqi, max_co2, co2_threshold) 
+                    homebridge.update_air_quality(name, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold)
+                    domoticz.update_air_quality(name, part_2_5, co2, voc, max_aqi)
                 self.purifier_settings_update_time, mode, fan_speed, child_lock, led_brightness = air_purifier[name].capture_settings()
                 homebridge.set_air_purifier_state(name, mode, fan_speed, child_lock, led_brightness)    
             # Start up Aircons
@@ -175,7 +176,8 @@ class NorthcliffHomeManagerClass(object):
                     for name in self.air_purifier_names:
                         if self.air_purifier_names[name]['Auto'] == True:# Readings only come from auto units
                             self.purifier_readings_update_time, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold = air_purifier[name].capture_readings()
-                            homebridge.update_air_quality(part_2_5, co2, voc, max_aqi, max_co2, co2_threshold)
+                            homebridge.update_air_quality(name, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold)
+                            domoticz.update_air_quality(name, part_2_5, co2, voc, max_aqi)
                 purifier_settings_check_time = time.time()
                 if (purifier_settings_check_time - self.purifier_settings_update_time) >= 5: # Update air purifier settings if last update was >= 5 seconds ago
                     for name in self.air_purifier_names:
@@ -246,6 +248,7 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
             self.aircon_button_type[name] = 'Thermostat Control' # To do. Add ability to manage multiple aircons
         self.window_blind_position_map = {'Open': 100, 'Venetian': 50, 'Closed': 0}
         self.air_quality_format = {'name': 'Aircon Quality'}
+        self.air_quality_service_name_map = {'Living': 'Air Quality'}
         self.air_purifier_format = {'name': 'Aircon Purifier', 'service' :'AirPurifier'}
 
     def capture_homebridge_buttons(self, parsed_json):
@@ -714,9 +717,9 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
             homebridge_json['value'] = self.window_blind_position_map[window_blind_config['status'][blind]]
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
 
-    def update_air_quality(self, part_2_5, co2, voc, aqi, max_co2, co2_threshold):
+    def update_air_quality(self, name, part_2_5, co2, voc, aqi, max_co2, co2_threshold):
         homebridge_json = self.air_quality_format
-        homebridge_json['service_name'] = 'Air Quality'
+        homebridge_json['service_name'] = self.air_quality_service_name_map[name]
         homebridge_json['characteristic'] = 'AirQuality'
         homebridge_json['value'] = aqi
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
@@ -776,6 +779,7 @@ class DomoticzClass(object): # Manages communications to and from the z-wave obj
         self.powerpoint_format = {'command': 'switchlight'}
         # Map powerpoint switch functions to translate True to On and False to Off for domoticz_json
         self.powerpoint_map = {True: 'On', False:'Off'}
+        self.air_quality_idx_map = {'Living':{'part_2_5': 708, 'co2': 705, 'voc': 706, 'max_aqi': 707}}
 
     def process_device_data(self, parsed_json):
         # Selects the object and method for incoming multisensor, door sensor, flood sensor and light dimmer messages
@@ -913,6 +917,26 @@ class DomoticzClass(object): # Manages communications to and from the z-wave obj
                 publish = True
         if publish == True:
             client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
+
+    def update_air_quality(self, name, part_2_5, co2, voc, max_aqi):
+        domoticz_json = {}
+        if name in self.air_quality_idx_map:
+            #print('Updating Domoticz Air Quality')
+            domoticz_json['idx'] = self.air_quality_idx_map[name]['part_2_5']
+            domoticz_json['nvalue'] = 0
+            domoticz_json['svalue'] = str(round(part_2_5, 0))
+            client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
+            domoticz_json['idx'] = self.air_quality_idx_map[name]['max_aqi']
+            domoticz_json['svalue'] = str(max_aqi)
+            client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
+            domoticz_json = {}
+            domoticz_json['idx'] = self.air_quality_idx_map[name]['voc']
+            domoticz_json['nvalue'] = voc
+            client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
+            domoticz_json = {}
+            domoticz_json['idx'] = self.air_quality_idx_map[name]['co2']
+            domoticz_json['nvalue'] = co2
+            client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))    
 
 
 class FloodSensorClass(object): 
