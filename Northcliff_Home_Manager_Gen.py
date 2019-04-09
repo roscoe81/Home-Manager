@@ -1,4 +1,4 @@
-#Northcliff Home Manager - 7.15 Gen
+#Northcliff Home Manager - 7.20 Gen
 #!/usr/bin/env python
 
 import paho.mqtt.client as mqtt
@@ -20,7 +20,7 @@ class NorthcliffHomeManagerClass(object):
         self.multisensor_names = ['Living', 'Study', 'Kitchen', 'North', 'South', 'Main', 'Rear Balcony', 'North Balcony', 'South Balcony']
         # List the outdoor sensors
         self.outdoor_zone = ['Rear Balcony', 'North Balcony', 'South Balcony']
-        # Group outdoor sensors in one homebridge "room" name that for passing to the homebridge object
+        # Group outdoor sensors in one homebridge "room" name for passing to the homebridge object
         self.outdoor_sensors_homebridge_name = 'Balconies'
         # Name each door sensor and identify the room that contains that door sensor
         self.door_sensor_names_locations = {'North Living Room': 'Living Room', 'South Living Room': 'Living Room', 'Entry': 'Entry'}
@@ -155,6 +155,9 @@ class NorthcliffHomeManagerClass(object):
             # Initialise Door Sensor states
             for name in self.door_sensor_names_locations:
                 homebridge.update_door_state(name, self.door_sensor_names_locations[name], True, False)
+            # Initialise Garage Door state
+            homebridge.update_garage_door('Closing')
+            homebridge.update_garage_door('Closed')
             while True: # The main Home Manager Loop
                 aircon['Aircon'].control_aircon() # Call the method that controls the aircon. To do: dAd support for mutliple aircons
                 # The following tests and method calls are here in the main code loop, rather than the on_message method to avoid time.sleep calls in the window blind object delaying incoming mqtt message handling
@@ -235,7 +238,7 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
         self.doorbell_button_type = {'Terminated': 'Indicator', 'AutoPossible': 'Indicator', 'Triggered': 'Indicator',
                                      'OpenDoor': 'Momentary', 'Activated': 'Indicator', 'Automatic': 'Switch', 'Manual': 'Switch', 'Ringing': 'Motion'}
         self.powerpoint_format = {'name': 'Powerpoint', 'service': 'Outlet', 'service_name': ''}
-        self.garage_door_format = {'name': 'Garage', 'service_name': 'OpenGarage'}
+        self.garage_door_format = {'name': 'Garage', 'service_name': 'Garage Door'}
         self.garage_door_characteristics = {'Current': 'CurrentDoorState','Target': 'TargetDoorState'}
         self.flood_state_format = {'name': 'Flood', 'service': 'LeakSensor'}
         self.flood_state_characteristic = 'LeakDetected'
@@ -319,31 +322,36 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
         #print('Homebridge: Process Doorbell Button', parsed_json)
         # Ignore the button press if it's only an indicator and reset to its pre-pressed state
         if self.doorbell_button_type[parsed_json['service_name']] == 'Indicator':
-            time.sleep(0.5)
+            #print('Indicator')
+            time.sleep(1)
             homebridge_json = self.doorbell_format
             homebridge_json['service_name'] = parsed_json['service_name']
             homebridge_json['value'] = doorbell.status[parsed_json['service_name']]
+            #print(self.outgoing_mqtt_topic, homebridge_json)
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))       
         # Send the doorbell button message to the doorbell if the button is a switch
         elif self.doorbell_button_type[parsed_json['service_name']] == 'Switch':
             doorbell.process_button(parsed_json['service_name'])
         # Send the doorbell button message to the doorbell and reset to the off position if the button is a momentary switch
         elif self.doorbell_button_type[parsed_json['service_name']] == 'Momentary':
+            #print('Momentary')
             doorbell.process_button(parsed_json['service_name'])
-            time.sleep(1)
+            time.sleep(2)
             homebridge_json = self.doorbell_format
             homebridge_json['service_name'] = parsed_json['service_name']
             homebridge_json['value'] = False # Prepare to return switch state to off
             # Publish homebridge payload with pre-pressed switch state
+            #print(homebridge_json)
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         elif self.doorbell_button_type[parsed_json['service_name']] == 'Motion':
+            #print ('Ringing')
             pass
         else:
             print('Unrecognised Doorbell Button Type')
             pass    
 
     def process_garage_door_button(self, parsed_json):
-        print('Homebridge: Process Garage Door Button', parsed_json)
+        #print('Homebridge: Process Garage Door Button', parsed_json)
         if parsed_json['value'] == 0: # Open garage door if it's an open door command
             garage_door.open_garage_door(parsed_json)
         else: # Ignore any other commands and set homebridge garage door button to closed state
@@ -589,7 +597,7 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
             mgr.print_update("Garage Door Closed on ")
             homebridge_json['characteristic'] = self.garage_door_characteristics['Current']
             homebridge_json['value'] = 1
-            client.publish('homebridge/to/set', '{"name":"Garage","service_name":"OpenGarage","characteristic":"CurrentDoorState","value":1}') # Send Current Garage Door Closed Message to Homebridge
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Send Current Garage Door Closed Message to Homebridge
         else:
             print("Invalid Garage Door Status Message", service)
                
@@ -1169,10 +1177,11 @@ class GaragedoorClass(object):
         #print ('Instantiated Garage Door', self)
         self.garage_door_mqtt_topic = outgoing_mqtt_topic
         self.garage_door_state = 'Closed'
+        self.open_garage_service = 'OpenGarage'
         
     def open_garage_door(self, parsed_json):
         garage_json = {}
-        garage_json['service'] = parsed_json['service_name']
+        garage_json['service'] = self.open_garage_service
         garage_json['value'] = parsed_json['value']
         mgr.print_update("Garage Door Open Command sent on ")
         client.publish(self.garage_door_mqtt_topic, json.dumps(garage_json)) # Send command to Garage Door          
@@ -1200,11 +1209,11 @@ class DoorbellClass(object):
     def capture_doorbell_status(self, parsed_json):
         # Sync HomeManager's doorbell status and homebridge doorbell button settings with the doorbell
         # monitor status when an mqtt status update message is received from the doorbell monitor 
-        # mgr.print_update('Doorbell Status update on ')
+        #mgr.print_update('Doorbell Status update on ')
         for status_item in self.status: # For each status item in the doorbell status
             self.status[status_item] = parsed_json[status_item] # Update doorbell status
             homebridge.update_doorbell_status(parsed_json, status_item) # Send update to homebridge
-        # print(self.status)
+        #print(self.status)
         
     def process_button(self, button_name):
         doorbell_json = {}
@@ -1342,7 +1351,7 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
         # Called when a changed in the blind's light sensor, doors or auto_override button
         current_temperature = multisensor[window_blind_config['temp sensor']].sensor_types_with_value['Temperature']
         if current_temperature != 1: # Wait for valid temp reading (1 is startup temp)
-            mgr.print_update('Blind Control invoked on ')
+            #mgr.print_update('Blind Control invoked on ')
             # Has temp passed thresholds?
             temp_passed_threshold, current_blind_temp_threshold = self.check_outside_temperatures(window_blind_config, current_temperature,
                                                                                                   self.previous_blind_temp_threshold, 1)
@@ -1362,10 +1371,10 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                 new_high_sunlight = 1 # If it's low indirect sunlight
             else:
                 new_high_sunlight = 0 # If it's night time
-            print('High Sunlight Levels checked')
-            print ('New Sensor Light Level Reading', light_level, 'Lux', 'Current High Sunlight Level:',
-                   self.current_high_sunlight, 'New High Sunlight Level:', new_high_sunlight,
-                   'Daylight?', light_level > window_blind_config['sunlight threshold 0'])
+            #print('High Sunlight Levels checked')
+            #print ('New Sensor Light Level Reading', light_level, 'Lux', 'Current High Sunlight Level:',
+                   #self.current_high_sunlight, 'New High Sunlight Level:', new_high_sunlight,
+                   #'Daylight?', light_level > window_blind_config['sunlight threshold 0'])
             if new_high_sunlight != self.current_high_sunlight: # Capture the previous sunlight level if the sunlight level has changed
                 self.previous_high_sunlight = self.current_high_sunlight # Used in Sunlight Levels 2 and 3 to determine is the sunlight level has increased or decreased
             if (new_high_sunlight != self.current_high_sunlight or door_state_changed == True or
@@ -1396,9 +1405,9 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                             print('Blinds were adjusted due to door opening')
                     if temp_passed_threshold == True:
                         if current_blind_temp_threshold == False:
-                            print('Blinds adjusted due to the external temperature moving outside the defined range')
+                            print('Blinds adjusted due to the external temperature moving inside the defined range')
                         else:
-                            print('Blinds adjusted due to an external temperature moving inside the defined range')
+                            print('Blinds adjusted due to an external temperature moving outside the defined range')
                     if self.auto_override_changed == True:
                         if self.auto_override == False:
                            print('Blinds adjusted due to auto_override being switched off')   
@@ -1412,7 +1421,7 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                     window_blind_config['blind_doors'][door]['door_state_changed'] = False
                 self.window_blind_config = window_blind_config
             else: # Nothing changed that affects blind states
-                print('Blind Status Unchanged')
+                #print('Blind Status Unchanged')
                 pass
 
     def check_outside_temperatures(self, window_blind_config, current_temperature, previous_blind_temp_threshold, hysteresis_gap):
@@ -1432,10 +1441,10 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
             else: # Set that it hasn't jumped the thresholds
                 temp_passed_threshold = False
                 current_blind_temp_threshold = True
-        print('Outside Temperatures checked')
-        print('Current temperature is', current_temperature, 'degrees.', 'Previously Outside Temp Thresholds?',
-               previous_blind_temp_threshold, 'Currently Outside Temp Thresholds?', current_blind_temp_threshold,
-               'Temp Moved Inside or Outside Thresholds?', temp_passed_threshold)
+        #print('Outside Temperatures checked')
+        #print('Current temperature is', current_temperature, 'degrees.', 'Previously Outside Temp Thresholds?',
+               #previous_blind_temp_threshold, 'Currently Outside Temp Thresholds?', current_blind_temp_threshold,
+               #'Temp Moved Inside or Outside Thresholds?', temp_passed_threshold)
         return(temp_passed_threshold, current_blind_temp_threshold)
 
     def check_door_state(self, window_blind_config, previous_door_open):
@@ -1460,12 +1469,12 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
             door_state_changed = False
             door_open = not all_doors_closed
             pass
-        print('Door State checked')
-        print ('Door State Changed?', door_state_changed, 'Any Doors Open?', door_open)
+        #print('Door State checked')
+        #print ('Door State Changed?', door_state_changed, 'Any Doors Open?', door_open)
         return(door_open, door_state_changed)
 
     def set_blind_sunlight_4(self, door_open, auto_override, window_blind_config):
-        print('High Sunlight Level 4 Invoked')
+        #print('High Sunlight Level 4 Invoked')
         print_blind_change = False
         if auto_override == False:
             if door_open == False: # Set right window blind to Venetian, close doors and left blind if both doors closed
@@ -1498,11 +1507,12 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                 window_blind_config['status']['Right Door'] = 'Open'
                 window_blind_config['status']['All Blinds'] = 'Venetian'
         else:
-            print('No Blind Change. Auto Blind Control is overridden')
+            #print('No Blind Change. Auto Blind Control is overridden')
+            pass
         return(print_blind_change, window_blind_config['status'])
 
     def set_blind_sunlight_3(self, door_open, door_state_changed, previous_high_sunlight, auto_override, window_blind_config):
-        print('High Sunlight Level 3 Invoked')
+        #print('High Sunlight Level 3 Invoked')
         print_blind_change = False
         if auto_override == False:
             if previous_high_sunlight < 3: # If this level has been reached after being in levels 0, 1 or 2
@@ -1538,30 +1548,31 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                 else: # Do nothing if there has been no change to the door state
                     pass
         else:
-            print('No Blind Change. Auto Blind Control is overridden')               
+            #print('No Blind Change. Auto Blind Control is overridden')
+            pass
         return(print_blind_change, window_blind_config['status'])
 
     def set_blind_sunlight_2(self, door_open, previous_high_sunlight, auto_override, window_blind_config, current_blind_temp_threshold, current_temperature):
-        print('High Sunlight Level 2 Invoked')
+        #print('High Sunlight Level 2 Invoked')
         print_blind_change = False
         if auto_override == False:
             if previous_high_sunlight < 2: # If this level has been reached after being in levels 0 or 1
                 if current_blind_temp_threshold == True: # If the outside temperature is outside the pre-set thresholds
                     if door_open == False: # All blinds to venetian state if the external temperature is outside the pre-set thresholds and the doors are closed.
-                        print('All blinds set to venetian state because the outdoor temperature is now outside the pre-set thresholds with doors closed')
-                        print('Pre-set upper temperature threshold is', window_blind_config['high_temp_threshold'], 'degrees', 'Pre-set lower temperature limit is', window_blind_config['low_temp_threshold'], 'degrees',
-                              'Current temperature is', current_temperature, 'degrees')
+                        #print('All blinds set to venetian state because the outdoor temperature is now outside the pre-set thresholds with doors closed')
+                        #print('Pre-set upper temperature threshold is', window_blind_config['high_temp_threshold'], 'degrees', 'Pre-set lower temperature limit is', window_blind_config['low_temp_threshold'], 'degrees',
+                              #'Current temperature is', current_temperature, 'degrees')
                         print_blind_change, window_blind_config['status'] = self.all_blinds_venetian(window_blind_config)
                     else: # Open door blinds if a door is open
-                        print('Door blinds opening because a door has been opened while the last sunlight state before reaching level 2 was 0 or 1 and the outdoor temperature is still outside the pre-set thresholds')
-                        print('Pre-set upper temperature threshold is', window_blind_config['high_temp_threshold'], 'degrees', 'pre-set lower temperature threshold is', window_blind_config['low_temp_threshold'], 'degrees',
-                              'Current temperature is', current_temperature, 'degrees')
+                        #print('Door blinds opening because a door has been opened while the last sunlight state before reaching level 2 was 0 or 1 and the outdoor temperature is still outside the pre-set thresholds')
+                        #print('Pre-set upper temperature threshold is', window_blind_config['high_temp_threshold'], 'degrees', 'pre-set lower temperature threshold is', window_blind_config['low_temp_threshold'], 'degrees',
+                              #'Current temperature is', current_temperature, 'degrees')
                         self.move_blind('All Doors', 'up')
                         print_blind_change = True
                 else: # Open all blinds if the external temperature is now within the pre-set thresholds
-                    print('All blinds opening because the last sunlight state before reaching level 2 was 0 or 1 and the outdoor temperature is inside the pre-set thresholds')
-                    print('Pre-set upper temperature threshold is', window_blind_config['high_temp_threshold'], 'degrees', 'pre-set lower temperature threshold is', window_blind_config['low_temp_threshold'], 'degrees',
-                              'Current temperature is', current_temperature, 'degrees')
+                    #print('All blinds opening because the last sunlight state before reaching level 2 was 0 or 1 and the outdoor temperature is inside the pre-set thresholds')
+                    #print('Pre-set upper temperature threshold is', window_blind_config['high_temp_threshold'], 'degrees', 'pre-set lower temperature threshold is', window_blind_config['low_temp_threshold'], 'degrees',
+                              #'Current temperature is', current_temperature, 'degrees')
                     print_blind_change, window_blind_config['status'] = self.raise_all_blinds(window_blind_config)
             else: # If this level has been reached after being in levels 3 or 4
                 if door_open == False: # Set all blinds to venetian state if both doors are closed
@@ -1579,34 +1590,36 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                     window_blind_config['status']['Right Door'] = 'Open'
                     window_blind_config['status']['All Blinds'] = 'Venetian'
         else:
-            print('No Blind Change. Auto Blind Control is overridden')
+            #print('No Blind Change. Auto Blind Control is overridden')
+            pass
         return(print_blind_change, window_blind_config['status'])
 
     def set_blind_sunlight_1(self, door_open, auto_override, window_blind_config, current_blind_temp_threshold, current_temperature):
-        print('High Sunlight Level 1 Invoked')
+       # print('High Sunlight Level 1 Invoked')
         print_blind_change = False
         if auto_override == False:
             if current_blind_temp_threshold == True and door_open == False: # Lower all blinds if the outside temperature is outside the pre-set thresholds and the doors are closed.
-                print('All blinds set to Venetian because the outdoor temperature is outside the pre-set thresholds with the doors closed')
-                print('Pre-set upper temperature threshold is', window_blind_config['high_temp_threshold'], 'Pre-set lower temperature threshold is', window_blind_config['low_temp_threshold'],
-                       'Current temperature is', current_temperature, 'degrees')
+                #print('All blinds set to Venetian because the outdoor temperature is outside the pre-set thresholds with the doors closed')
+                #print('Pre-set upper temperature threshold is', window_blind_config['high_temp_threshold'], 'Pre-set lower temperature threshold is', window_blind_config['low_temp_threshold'],
+                       #'Current temperature is', current_temperature, 'degrees')
                 print_blind_change, window_blind_config['status'] = self.all_blinds_venetian(window_blind_config)
             else: # Raise all blinds if the external temperature is within the pre-set thresholds or the doors are opened.
-                if current_blind_temp_threshold == True and door_open == True:
-                    print('Opening all blinds due to doors being opened, even though the outdoor temperature is outside the pre-set thresholds')       
-                elif current_blind_temp_threshold == False and door_open == False:
-                    print("Opening all blinds because the outdoor temperature is within the pre-set thresholds")
-                else: # If current_blind_temp_threshold == False and door_open == True:
-                    print("Opening all blinds due to doors being opened and the outdoor temperature is within the pre-set thresholds")
-                print('Pre-set upper temperature threshold is', window_blind_config['high_temp_threshold'], 'Pre-set lower temperature threshold is', window_blind_config['low_temp_threshold'],
-                       'Current temperature is', current_temperature, 'degrees')
+                #if current_blind_temp_threshold == True and door_open == True:
+                    #print('Opening all blinds due to doors being opened, even though the outdoor temperature is outside the pre-set thresholds')
+                #elif current_blind_temp_threshold == False and door_open == False:
+                    #print("Opening all blinds because the outdoor temperature is within the pre-set thresholds")
+                #else: # If current_blind_temp_threshold == False and door_open == True:
+                    #print("Opening all blinds due to doors being opened and the outdoor temperature is within the pre-set thresholds")
+                #print('Pre-set upper temperature threshold is', window_blind_config['high_temp_threshold'], 'Pre-set lower temperature threshold is', window_blind_config['low_temp_threshold'],
+                       #'Current temperature is', current_temperature, 'degrees')
                 print_blind_change, window_blind_config['status'] = self.raise_all_blinds(window_blind_config)      
         else:
-            print('No Blind Change. Auto Blind Control is overridden')
+            #print('No Blind Change. Auto Blind Control is overridden')
+            pass
         return(print_blind_change, window_blind_config['status'])
 
     def set_blind_sunlight_0(self, door_open, auto_override, window_blind_config):
-        print('High Sunlight Level 0 Invoked')
+        #print('High Sunlight Level 0 Invoked')
         # The use of this level is to open the blinds in the morning when level 1 is reached and the outside temperature is within the pre-set levels
         # Make no change in this blind state because it's night time unless a door is opened (caters for case where blinds remain
         # closed due to temperatures being outside thresholds when moving from level 1 to level 0 or the blinds have been manually closed while in level 0)
@@ -1614,18 +1627,19 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
         if auto_override == False:
             if door_open == True: # Raise door blinds if a door is opened. Caters for the case where blinds are still set to 50% after
                 # sunlight moves from level 1 to level 0 because the temp is outside thresholds
-                print('Opening door blinds due to a door being opened')
+                #print('Opening door blinds due to a door being opened')
                 self.move_blind('All Doors', 'up')
                 print_blind_change = True
                 window_blind_config['status']['All Doors'] = 'Open'
                 window_blind_config['status']['Left Door'] = 'Open'
                 window_blind_config['status']['Right Door'] = 'Open'
         else:
-            print('No Blind Change. Auto Blind Control is overridden')
+            #print('No Blind Change. Auto Blind Control is overridden')
+            pass
         return(print_blind_change, window_blind_config['status'])
 
     def change_auto_override(self, auto_override):
-        mgr.print_update('Auto Blind Override button pressed on ')
+        #mgr.print_update('Auto Blind Override button pressed on ')
         self.auto_override = auto_override
         self.auto_override_changed = True
 
@@ -1673,7 +1687,7 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
 
     def all_blinds_venetian(self, window_blind_config):
         # Set blind status
-        print('Setting Blind Status')
+        #print('Setting Blind Status')
         for blind_button in window_blind_config['status']:
             window_blind_config['status'][blind_button] = 'Venetian'        
         window_blind_config['status'] = self.venetian_door_impacting_blind('All Blinds', window_blind_config)
@@ -1692,7 +1706,7 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                     door_opened = True
             if door_opened == True:
                 if already_opened == False:
-                    mgr.print_update(door + ' opened while blind is closing. Door blinds now opening on ')
+                    #mgr.print_update(door + ' opened while blind is closing. Door blinds now opening on ')
                     already_opened = True
                     self.door_blind_override = True
                     self.move_blind('All Doors', 'up')
@@ -2106,8 +2120,7 @@ class AirconClass(object):
         if mode == 'Heat':
             if self.status['Heat'] == False: # Only set to heat mode if it's not already been done
                 mgr.print_update("Heat Mode Selected on ")
-                print("Day Temp is", self.settings['Day_zone_current_temperature'], "Degrees. Day Target Temp is", self.settings['Day_zone_target_temperature'], "Degrees. Night Temp is",
-                                          self.settings['Night_zone_current_temperature'], "Degrees. Night Target Temp is", self.settings['Night_zone_target_temperature'], "Degrees") 
+                self.print_aircon_mode_state() 
                 client.publish(self.outgoing_mqtt_topic, '{"service": "Heat Mode"}')
                 self.status['Heat'] = True
             if self.status['Fan Hi'] == False: # Only set to Fan to Hi if it's not already been done
@@ -2116,8 +2129,7 @@ class AirconClass(object):
         if mode == 'Cool':
             if self.status['Cool'] == False: # Only set to cool mode if it's not already been done
                 mgr.print_update("Cool Mode Selected on ")
-                print("Day Temp is", self.settings['Day_zone_current_temperature'], "Degrees. Day Target Temp is", self.settings['Day_zone_target_temperature'], "Degrees. Night Temp is",
-                                          self.settings['Night_zone_current_temperature'], "Degrees. Night Target Temp is", self.settings['Night_zone_target_temperature'], "Degrees") 
+                self.print_aircon_mode_state()
                 client.publish(self.outgoing_mqtt_topic, '{"service": "Cool Mode"}')
                 self.status['Cool'] = True
             if self.status['Fan Hi'] == False: # Only set to Fan to Hi if it's not already been done
@@ -2126,14 +2138,17 @@ class AirconClass(object):
         if mode == 'Idle':
             if self.status['Fan'] == False: # Only set to Fan Mode if it's not already been done
                 mgr.print_update("Idle Mode Selected on ")
-                print("Day Temp is", self.settings['Day_zone_current_temperature'], "Degrees. Day Target Temp is", self.settings['Day_zone_target_temperature'], "Degrees. Night Temp is",
-                                          self.settings['Night_zone_current_temperature'], "Degrees. Night Target Temp is", self.settings['Night_zone_target_temperature'], "Degrees") 
+                self.print_aircon_mode_state() 
                 client.publish(self.outgoing_mqtt_topic, '{"service": "Fan Mode"}')
                 self.status['Fan'] = True
             if self.status['Fan Lo'] == False: # Only set Fan to Lo if it's not already been done
                 client.publish(self.outgoing_mqtt_topic, '{"service": "Fan Lo"}')
                 self.status['Fan Lo'] = True
 
+    def print_aircon_mode_state(self):
+        print("Day Temp is", round(self.settings['Day_zone_current_temperature'], 1), "Degrees. Day Target Temp is", round(self.settings['Day_zone_target_temperature'], 1), "Degrees. Night Temp is",
+                                          round(self.settings['Night_zone_current_temperature'], 1), "Degrees. Night Target Temp is", round(self.settings['Night_zone_target_temperature'], 1), "Degrees")
+        
     def check_power_rate(self, update_date_time):
         update_day = update_date_time.strftime('%A')
         if update_day == 'Saturday' or update_day == 'Sunday':
@@ -2383,12 +2398,18 @@ class Foobot:
                                 uuid=device['uuid'],
                                 name=device['name'],
                                 mac=device['mac'], base_url=self.BASE_URL)
-
         return [create_device(device) for device in req.json()]
 
+    def request_json_error_check(self, response):
+        try:
+            good_json = response.json()
+            return(good_json)
+        except ValueError:
+            mgr.print_update('Air Purifier JSON Error on ')
+            return('JSON Error')
 
 class FoobotDevice:
-    ## Same code as https://github.com/philipbl/pyfoobot
+    ## Extracted from https://github.com/philipbl/pyfoobot
     """Represents a foobot device."""
 
     def __init__(self, auth_header, user_id, uuid, name, mac, base_url):
@@ -2409,30 +2430,8 @@ class FoobotDevice:
                          period=0,
                          sampling=0)
         req = self.session.get(url, headers=self.auth_header)
-        return req.json()
-
-    def data_period(self, period, sampling):
-        """Get a specified period of data samples."""
-        url = '{base}/device/{uuid}/datapoint/{period}/last/{sampling}/'
-        url = url.format(base=self.BASE_URL,
-                         uuid=self.uuid,
-                         period=period,
-                         sampling=sampling)
-
-        req = self.session.get(url, headers=self.auth_header)
-        return req.json()
-
-    def data_range(self, start, end, sampling):
-        """Get a specified range of data samples."""
-        url = '{base}/device/{uuid}/datapoint/{start}/{end}/{sampling}/'
-        url = url.format(base=self.BASE_URL,
-                         uuid=self.uuid,
-                         start=start,
-                         end=end,
-                         sampling=sampling)
-
-        req = self.session.get(url, headers=self.auth_header)
-        return req.json()
+        response_json = fb.request_json_error_check(req)
+        return response_json
 
 class BlueAirClass(object):
     ## Adds BlueAir control to Foobot and FoobotDevice Classes from https://github.com/philipbl/pyfoobot to use the BlueAir homehost
@@ -2444,63 +2443,71 @@ class BlueAirClass(object):
         self.device = air_purifier_devices[identifier['Foobot Device']]
         self.name = name
         self.max_co2 = 0
-        self.air_readings = {}
+        self.air_readings = {'part_2_5': 1, 'co2': 1, 'voc': 1, 'pol':1}
         self.air_reading_bands = {'part_2_5':[9, 20, 35, 150], 'co2': [500, 1000, 1600, 2000], 'voc': [200, 350, 450, 750], 'pol': [20, 45, 60, 80]}
         self.co2_threshold = self.air_reading_bands['co2'][2]
         self.part_2_5_threshold = self.air_reading_bands['part_2_5'][2]
         self.previous_air_purifier_settings = {'Mode': '', 'Fan Speed': '', 'Child Lock':'', 'LED Brightness': '', 'Filter Status':''}
-        self.current_air_purifier_settings = {}
+        self.current_air_purifier_settings = {'Mode': '', 'Fan Speed': '', 'Child Lock':'', 'LED Brightness': '', 'Filter Status':''}
+        self.max_aqi = 1
 
     def capture_readings(self): # Capture device readings
         if self.auto == True: # Readings only come from auto units
             self.readings_update_time = time.time()
             latest_data = self.device.latest()
-            last_hour_data = self.device.data_period(3600, 0)
-            self.air_readings['part_2_5'] = latest_data['datapoints'][0][1]
-            self.air_readings['co2'] = latest_data['datapoints'][0][4]
-            if self.air_readings['co2'] > self.max_co2:
-                self.max_co2 = self.air_readings['co2']
-            self.air_readings['voc'] = latest_data['datapoints'][0][5]
-            self.air_readings['pol'] = latest_data['datapoints'][0][6]
-            max_aqi = 1
-            for reading in self.air_readings: # Check each air quality parameter's reading
-                for boundary in range(3): # Check each reading against its AQI boundary
-                    if self.air_readings[reading] >= self.air_reading_bands[reading][boundary]: # Find the boundary that the reading has exceeded 
-                        aqi = boundary + 2 # Convert the boundary to the AQI reading
-                        #print('Search Max AQI', aqi, reading, self.air_readings[reading])
-                        if aqi > max_aqi: # If this reading has the maximum AQI so far, make it the max AQI
-                            max_aqi = aqi
-                            max_reading = reading
-                            #print('Found Max AQI', max_aqi, max_reading, self.air_readings[max_reading])
-            return(self.readings_update_time, self.air_readings['part_2_5'], self.air_readings['co2'], self.air_readings['voc'], max_aqi, self.max_co2, self.co2_threshold, self.part_2_5_threshold)
+            if latest_data != 'JSON Error': # Capture New readings is there's valid data, otherwise, keep previous readings
+                mgr.print_update('Capturing Air Purifier Readings on ')
+                self.air_readings['part_2_5'] = latest_data['datapoints'][0][1]
+                self.air_readings['co2'] = latest_data['datapoints'][0][4]
+                if self.air_readings['co2'] > self.max_co2:
+                    self.max_co2 = self.air_readings['co2']
+                self.air_readings['voc'] = latest_data['datapoints'][0][5]
+                self.air_readings['pol'] = latest_data['datapoints'][0][6]
+                self.max_aqi = 1
+                for reading in self.air_readings: # Check each air quality parameter's reading
+                    for boundary in range(3): # Check each reading against its AQI boundary
+                        if self.air_readings[reading] >= self.air_reading_bands[reading][boundary]: # Find the boundary that the reading has exceeded 
+                            aqi = boundary + 2 # Convert the boundary to the AQI reading
+                            #print('Search Max AQI', aqi, reading, self.air_readings[reading])
+                            if aqi > self.max_aqi: # If this reading has the maximum AQI so far, make it the max AQI
+                                self.max_aqi = aqi
+                                max_reading = reading
+                    #print('Air Quality Component:', reading, 'has an AQI Level of', aqi, 'with a reading of', round(self.air_readings[reading],0))
+                if self.max_aqi > 1:
+                    print('AQI is at Level', self.max_aqi, 'due to', max_reading, 'with a reading of', round(self.air_readings[max_reading],0))
+                else:
+                    print('AQI is at Level 1')
+            else:
+                print('Air Purifier Readings Error')
+            return(self.readings_update_time, self.air_readings['part_2_5'], self.air_readings['co2'], self.air_readings['voc'], self.max_aqi, self.max_co2, self.co2_threshold, self.part_2_5_threshold)
 
 
     def capture_settings(self): # Capture device settings
         self.settings_update_time = time.time()
         self.settings_changed = False
         air_purifier_settings = self.get_device_settings()
-        if self.auto == True: # Auto BlueAir units have mode and fan speed in different list locations from manual units
-            self.current_air_purifier_settings['Mode'] = air_purifier_settings[9]['currentValue']
-            self.current_air_purifier_settings['Fan Speed'] = air_purifier_settings[5]['currentValue']
-            self.current_air_purifier_settings['Filter Status'] = air_purifier_settings[8]['currentValue']
+        if air_purifier_settings != 'JSON Error': # Capture New readings is there's valid data, otherwise, keep previous settings
+            #print('Capturing Air Purifier Settings')
+            if self.auto == True: # Auto BlueAir units have mode and fan speed in different list locations from manual units
+                self.current_air_purifier_settings['Mode'] = air_purifier_settings[9]['currentValue']
+                self.current_air_purifier_settings['Fan Speed'] = air_purifier_settings[5]['currentValue']
+                self.current_air_purifier_settings['Filter Status'] = air_purifier_settings[8]['currentValue']
+            else:
+                self.current_air_purifier_settings['Mode'] = air_purifier_settings[6]['currentValue']
+                self.current_air_purifier_settings['Fan Speed'] = air_purifier_settings[3]['currentValue']
+                self.current_air_purifier_settings['Filter Status'] = air_purifier_settings[5]['currentValue']
+            self.current_air_purifier_settings['Child Lock'] = air_purifier_settings[2]['currentValue']
+            self.current_air_purifier_settings['LED Brightness'] = air_purifier_settings[1]['currentValue']
+            for setting in self.previous_air_purifier_settings:
+                if self.previous_air_purifier_settings[setting] != self.current_air_purifier_settings[setting]:
+                    self.settings_changed = True
+                    self.previous_air_purifier_settings[setting] = self.current_air_purifier_settings[setting]
+            #print('Air Purifier Settings for ', self.name, 'Changed?', self.settings_changed, 'Settings:', self.current_air_purifier_settings)
         else:
-            self.current_air_purifier_settings['Mode'] = air_purifier_settings[6]['currentValue']
-            self.current_air_purifier_settings['Fan Speed'] = air_purifier_settings[3]['currentValue']
-            self.current_air_purifier_settings['Filter Status'] = air_purifier_settings[5]['currentValue']
-        self.current_air_purifier_settings['Child Lock'] = air_purifier_settings[2]['currentValue']
-        self.current_air_purifier_settings['LED Brightness'] = air_purifier_settings[1]['currentValue']
-        for setting in self.previous_air_purifier_settings:
-            if self.previous_air_purifier_settings[setting] != self.current_air_purifier_settings[setting]:
-                self.settings_changed = True
-                self.previous_air_purifier_settings[setting] = self.current_air_purifier_settings[setting]
-        #print('Air Purifier Settings for ', self.name, 'Changed?', self.settings_changed, 'Settings:', self.current_air_purifier_settings)
+            print('Air Purifier Settings Error')
         return (self.settings_changed, self.settings_update_time, self.current_air_purifier_settings['Mode'],
                 self.current_air_purifier_settings['Fan Speed'], self.current_air_purifier_settings['Child Lock'],
                 self.current_air_purifier_settings['LED Brightness'], self.current_air_purifier_settings['Filter Status'])
-              
-
-    def show_device_data(self): # Only used for debugging
-        print('Header:', self.device.auth_header, 'User ID:', self.device.user_id, 'uuid:', self.device.uuid, 'name:', self.device.name, self.device.mac, self.device.session)
 
     def active(self):
         if self.auto == False:
@@ -2555,8 +2562,8 @@ class BlueAirClass(object):
         url = '{base}/device/{uuid}/attributes/'
         url = url.format(base=self.base_url, uuid=self.device.uuid)
         req = self.session.get(url, headers=self.device.auth_header)
-        # print('Device Data for', self.name, 'is', req.json())
-        return req.json()
+        response_json = fb.request_json_error_check(req)
+        return response_json
 
             
 if __name__ == '__main__': # This is where to overall code kicks off
