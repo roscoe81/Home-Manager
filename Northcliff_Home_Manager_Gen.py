@@ -1,4 +1,4 @@
-#Northcliff Home Manager - 7.25 Gen
+#Northcliff Home Manager - 7.27 Gen
 #!/usr/bin/env python
 
 import paho.mqtt.client as mqtt
@@ -247,6 +247,7 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
         self.flood_battery_characteristic = 'StatusLowBattery'
         self.auto_blind_override_button_format = {'service_name': 'Auto Blind Override', 'characteristic': 'On'}
         self.aircon_thermostat_format = {'name': 'Aircon', 'service': 'Thermostat'} # To do. Add ability to manage multiple aircons
+        self.aircon_ventilation_button_format = {'name': 'Aircon', 'service_name': 'Ventilation', 'characteristic': 'On'}
         self.aircon_thermostat_characteristics = {'Mode': 'TargetHeatingCoolingState', 'Current Temperature': 'CurrentTemperature', 'Target Temperature':'TargetTemperature'}
         self.aircon_thermostat_mode_map = {0: 'Off', 1: 'Heat', 2: 'Cool'}
         self.aircon_thermostat_incoming_mode_map = {'Off': 0, 'Heat': 1, 'Cool': 2}
@@ -258,7 +259,7 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
         self.aircon_button_type = {'Remote Operation': 'Indicator', 'Heat': 'Indicator', 'Cool': 'Indicator',
                                     'Fan': 'Indicator', 'Fan Hi': 'Indicator', 'Fan Lo': 'Indicator',
                                     'Heating': 'Indicator', 'Compressor': 'Indicator', 'Terminated': 'Indicator',
-                                    'Damper': 'Position Indicator', 'Clean Filter': 'Indicator', 'Malfunction': 'Indicator'}
+                                    'Damper': 'Position Indicator', 'Clean Filter': 'Indicator', 'Malfunction': 'Indicator', 'Ventilation': 'Switch'}
         for name in self.aircon_thermostat_names:
             self.aircon_button_type[name] = 'Thermostat Control' # To do. Add ability to manage multiple aircons
         self.window_blind_position_map = {'Open': 100, 'Venetian': 50, 'Closed': 0}
@@ -406,6 +407,13 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
                 client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
             else:
                 pass
+        elif self.aircon_button_type[parsed_json['service_name']] == 'Switch':
+            if parsed_json['service_name'] == 'Ventilation':
+                ventilation = parsed_json['value']
+                #print('Ventilation Button Pressed')
+                aircon['Aircon'].process_ventilation_button(ventilation)
+            else:
+                print('Unknown Aircon Button Pressed', str(parsed_json))
         else:
             print("Unknown Aircon Homebridge Message", str(parsed_json))
             time.sleep(0.1)
@@ -633,7 +641,7 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
             homebridge_json['value'] = self.window_blind_position_map[window_blind_config['status'][blind]]
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
 
-    def reset_aircon_thermostats(self, thermostat_status): # Called on start-up to set all Homebridge sensors to "off", current temps to 1 degree and target temps to 25 degrees
+    def reset_aircon_thermostats(self, thermostat_status): # Called on start-up to set all Homebridge sensors to "off", current temps to 1 degree, target temps to 25 degrees and Ventilation Button 'Off'
         # Initialise Thermostat functions
         homebridge_json = self.aircon_thermostat_format # To do. Add ability to manage multiple aircons
         for name in self.aircon_thermostat_names:
@@ -645,7 +653,21 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
                 else:
                     homebridge_json['value'] = thermostat_status[name][function]
                 client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        self.reset_aircon_ventilation_button()
 
+    def reset_aircon_control_thermostat(self):
+        homebridge_json = self.aircon_thermostat_format # To do. Add ability to manage multiple aircons
+        homebridge_json['service_name'] = self.aircon_control_thermostat_name
+        homebridge_json['characteristic'] = self.aircon_thermostat_characteristics['Mode']
+        homebridge_json['value'] = 0
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+
+    def reset_aircon_ventilation_button(self):
+        homebridge_json = self.aircon_ventilation_button_format
+        homebridge_json['value'] = False
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+
+    
     def update_aircon_status(self, status_item, state):
         #print('Homebridge: Update Aircon Status', status_item, state)
         homebridge_json = self.aircon_status_format # To do. Add ability to manage multiple aircons
@@ -1793,9 +1815,6 @@ class AirconClass(object):
         self.aircon_config = aircon_config
         #print ('Instantiated Aircon', self, name)
         self.outgoing_mqtt_topic = self.aircon_config['mqtt Topics']['Outgoing']
-        self.mqtt_commands = {'Update Status': 'Update Status', 'Off': 'Off', 'Indoor Heat': 'Thermostat Heat', 'Indoor Cool': 'Thermostat Cool', 'Indoor Auto': 'Thermostat Auto',
-                                                     'Heat Mode': 'Heat Mode', 'Cool Mode': 'Cool Mode', 'Fan Mode': 'Fan Mode', 'Fan Hi': 'Fan Hi', 'Fan Med': 'Fan Med',
-                                                     'Fan Lo': 'Fan Lo', 'Damper Percent': 'Damper Percent'}
         self.day_zone = self.aircon_config['Day Zone']
         self.night_zone = self.aircon_config['Night Zone']
         self.indoor_zone = self.day_zone + self.night_zone
@@ -1807,7 +1826,7 @@ class AirconClass(object):
         self.status = {'Remote Operation': False,'Heat': False, 'Cool': False,'Fan': False, 'Fan Hi': False, 'Fan Lo': False,
                         'Heating': False, 'Filter':False, 'Compressor': False, 'Malfunction': False, 'Damper': 50}
         
-        self.settings = {'Thermo Heat': False, 'Thermo Cool': False, 'Thermo Off': True, 'indoor_thermo_mode': 'Cool', 'Day_zone_target_temperature': 21,
+        self.settings = {'Thermo Heat': False, 'Thermo Cool': False, 'Thermo Off': True, 'Ventilate' : False, 'indoor_thermo_mode': 'Cool', 'Day_zone_target_temperature': 21,
                           'Day_zone_current_temperature': 1, 'Night_zone_target_temperature': 21, 'Night_zone_current_temperature': 1,
                          'Indoor_zone_target_temperature': 21, 'Indoor_zone_current_temperature': 1, 'target_day_zone': 50, 'Day_zone_sensor_active': 0,
                           'Night_zone_sensor_active': 0, 'Indoor_zone_sensor_active': 0, 'aircon_previous_mode': 'Off', 'aircon_mode_change': False,
@@ -1823,13 +1842,13 @@ class AirconClass(object):
         self.min_cooling_effectiveness = {name: 9.9 for name in self.aircon_log_items}
         # Set up initial sensor data with a dictionary comprehension
         self.thermostat_status = {name: {'Current Temperature': 1, 'Target Temperature': 25, 'Mode': 'Off', 'Active': 0} for name in self.thermostat_names}
-        self.thermostat_mode_active_map = {'Off': 0, 'Heat': 1, 'Cool': 1}
+        self.thermostat_mode_active_map = {'Off': 0, 'Heat': 1, 'Cool': 1} # 1 Indicates that a thermostat is active (i.e. in either Heat or Cool Mode)
         self.start_time = time.time()
         self.temperature_update_time = {name: self.start_time for name in self.indoor_zone}
         self.log_damper_data = log_damper_data
 
         # Set up Aircon Power Consumption Dictionary
-        self.aircon_power_consumption = {'Heat': 4.97, 'Cool': 5.42, 'Idle': 0.13, 'Off': 0}
+        self.aircon_power_consumption = {'Heat': 4.97, 'Cool': 5.42, 'Idle': 0.13, 'Off': 0} # Power consumption in kWH for each mode
         self.aircon_weekday_power_rates = {0:{'name': 'off_peak1', 'rate': 0.1155, 'stop_hour': 6}, 7:{'name':'shoulder1', 'rate': 0.1771, 'stop_hour': 13},
                               14:{'name':'peak', 'rate':0.4218, 'stop_hour': 19}, 20: {'name': 'shoulder2', 'rate': 0.1771, 'stop_hour': 21},
                               22:{'name': 'off_peak2', 'rate': 0.1155, 'stop_hour': 23}}
@@ -1839,7 +1858,7 @@ class AirconClass(object):
         self.log_aircon_cost_data = log_aircon_cost_data
 
     def start_up(self):
-        # Reset Homebridge Thermostats on start-up
+        # Reset Homebridge Thermostats/Ventilation Buttons and set zone temps on start-up
         homebridge.reset_aircon_thermostats(self.thermostat_status)
         self.update_zone_temps()
         # Reset Domoticz Thermostats on start-up
@@ -1854,65 +1873,79 @@ class AirconClass(object):
     def shut_down(self):
         self.send_aircon_command('Update Status') # Get aircon status on shut-down
         self.send_aircon_command('Off') # Set aircon to Thermo Off mode on shut-down
-        # Reset Homebridge Thermostats on shut-down
+        # Reset Homebridge Thermostats and Ventilation buttons on shut-down
         self.thermostat_status = {name: {'Current Temperature': 1, 'Target Temperature': 21, 'Mode': 'Off', 'Active': 0} for name in self.thermostat_names}
         homebridge.reset_aircon_thermostats(self.thermostat_status)
         # Reset Domoticz Thermostats on shut-down
         domoticz.reset_aircon_thermostats(self.thermostat_status)
 
+    def process_ventilation_button(self, ventilation):
+        #print('Process Aircon Ventilation Button. Ventilation:', ventilation, 'Thermo Off:', self.settings['Thermo Off'])
+        if self.settings['Thermo Off'] == True: # Aircon Ventilation mode can only be set if the aircon is in Thermo Off Mode
+            if ventilation == True:
+                self.settings['Ventilate'] = True
+                self.send_aircon_command('Ventilate')
+            else:
+                self.settings['Ventilate'] = False
+                self.send_aircon_command('Off')
+            #print('Setting Ventilation', self.settings['Ventilate'])
+        else: # Reset Homebridge Ventilation Button to previous state if it's not possible to be in that mode
+            time.sleep(0.5)
+            homebridge.reset_aircon_ventilation_button()      
+
     def set_thermostat(self, thermostat_name, control, setting): 
-        if thermostat_name == self.control_thermostat:
+        if thermostat_name == self.control_thermostat: # Only invoke mode changes if it's the control thermostat
             if control == 'Mode':
                 if setting == 'Off':
                     #print (str(parsed_json))
                     self.settings['Thermo Heat'] = False
                     self.settings['Thermo Cool'] = False
                     self.settings['Thermo Off'] = True
+                    self.settings['Ventilate'] = False
+                    homebridge.reset_aircon_ventilation_button() # Reset Homebridge ventilation button whenever the control thermostat mode is invoked
                     self.thermostat_status[thermostat_name]['Mode'] = setting
                     self.thermostat_status[thermostat_name]['Active'] = self.thermostat_mode_active_map[setting]
-                    client.publish(self.outgoing_mqtt_topic, '{"service": "Off"}')
-                    #domoticz.set_aircon_mode('Off') # Mirror state on domoticz. Deleted due to control loop.
+                    self.send_aircon_command('Off')
                 if setting == 'Heat':
                     #print (str(parsed_json))
                     if self.settings['Indoor_zone_sensor_active'] == 1: #Only do something if at least one sensor is active
                         self.settings['Thermo Heat'] = True
                         self.settings['Thermo Cool'] = False
                         self.settings['Thermo Off'] = False
+                        self.settings['Ventilate'] = False
+                        homebridge.reset_aircon_ventilation_button() # Reset Homebridge ventilation button whenever the control thermostat mode is invoked
                         self.settings['indoor_thermo_mode'] = 'Heat'
                         self.thermostat_status[thermostat_name]['Mode'] = setting
                         self.thermostat_status[thermostat_name]['Active'] = self.thermostat_mode_active_map[setting]
-                        client.publish(self.outgoing_mqtt_topic, '{"service": "Thermostat Heat"}')
-                        #domoticz.set_aircon_mode('Heat') # Mirror state on domoticz. Deleted due to control loop.
+                        self.send_aircon_command('Thermostat Heat')
                     else:
                         print('Trying to start aircon without any sensor active. Command ignored')
-                        client.publish('homebridge/to/set', '{"name":"Aircon","service_name":"Indoor","service":"Thermostat", "characteristic":"TargetHeatingCoolingState","value":0}')
+                        homebridge.reset_aircon_control_thermostat() # Set homebridge aircon control thermostat back to Off
                 if setting == 'Cool': 
                     #print (str(parsed_json))
                     if self.settings['Indoor_zone_sensor_active'] == 1: #Only do something if at least one sensor is active
                         self.settings['Thermo Heat'] = False
                         self.settings['Thermo Cool'] = True
                         self.settings['Thermo Off'] = False
+                        self.settings['Ventilate'] = False
+                        homebridge.reset_aircon_ventilation_button() # Reset Homebridge ventilation button whenever the control thermostat mode is invoked
                         self.settings['indoor_thermo_mode'] = 'Cool'
                         self.thermostat_status[thermostat_name]['Mode'] = setting
                         self.thermostat_status[thermostat_name]['Active'] = self.thermostat_mode_active_map[setting]
-                        client.publish(self.outgoing_mqtt_topic, '{"service": "Thermostat Cool"}')
-                        #domoticz.set_aircon_mode('Cool') # Mirror state on domoticz. Deleted due to control loop.
+                        self.send_aircon_command('Thermostat Cool')
                     else:
                         print('Trying to start aircon without any sensor active. Command ignored')
-                        client.publish('homebridge/to/set', '{"name":"Aircon","service_name":"Indoor","service":"Thermostat", "characteristic":"TargetHeatingCoolingState","value":0}')
+                        homebridge.reset_aircon_control_thermostat() # Set homebridge aircon control thermostat back to Off
             self.update_zone_temps() # Update the "Day", "Night" and "Indoor" Zones current temperatures with active temperature sensor readings and the "Indoor" Target Temperature is updated with the target temperatures of the active sensor settings
             indoor_control_mode = self.thermostat_status[self.control_thermostat]['Mode']
-            self.update_active_thermostats(indoor_control_mode)  # Ensure that active sensors have the same mode setting as the Indoor Control
-            #print(str(self.settings))
+            self.update_active_thermostats(indoor_control_mode)  # Ensure that active thermostats have the same mode setting as the control thermostat
         else:
             if control == 'Target Temperature':
                 self.thermostat_status[thermostat_name]['Target Temperature'] = setting
-                #domoticz.set_aircon_thermostat_target_temp(thermostat_name, setting) # Mirror target temp on domoticz. Deleted due to control loop.
                 #mgr.print_update('Updating ' + thermostat_name + ' Target Temperature to ' + str(setting) + " Degrees, Actual Temperature = " + str(self.thermostat_status[thermostat_name]['Current Temperature']) + " Degrees on ")
             if control == 'Mode':
                 self.thermostat_status[thermostat_name]['Mode'] = setting
                 self.thermostat_status[thermostat_name]['Active'] = self.thermostat_mode_active_map[setting]
-                #domoticz.change_aircon_sensor_enable(thermostat_name, setting) # Mirror state on domoticz. Deleted due to control loop.
             self.update_zone_temps() # Update the "Day", "Night" and "Indoor" Zones current temperatures with active temperature sensor readings
             indoor_control_mode = self.thermostat_status[self.control_thermostat]['Mode']
             self.update_active_thermostats(indoor_control_mode) # Ensure that active sensors have the same mode setting as the Indoor Control
@@ -1920,28 +1953,26 @@ class AirconClass(object):
 
     def send_aircon_command(self, command): # Send command to aircon controller
         aircon_command = {}
-        aircon_command['service'] = self.mqtt_commands[command]
+        aircon_command['service'] = command
         client.publish(self.outgoing_mqtt_topic, json.dumps(aircon_command))
 
     def capture_status(self, parsed_json):
         if parsed_json['service'] == 'Heartbeat':
             #mgr.print_update('Received Heartbeat from Aircon and sending Ack on ')
-            client.publish(self.outgoing_mqtt_topic, '{"service": "Heartbeat Ack"}')
+            self.send_aircon_command('Heartbeat Ack')
         elif parsed_json['service'] == 'Status Update':
             #mgr.print_update('Airconditioner Status update on ')
             #print(parsed_json)
             for status_item in self.status:
                 #if self.status[status_item] != parsed_json[status_item]:
-                #print('Aircon', status_item, 'changed from', self.status[status_item], 'to', parsed_json[status_item])
+                    #print('Aircon', status_item, 'changed from', self.status[status_item], 'to', parsed_json[status_item])
                 self.status[status_item] = parsed_json[status_item]
                 homebridge.update_aircon_status(status_item, self.status[status_item])
                 domoticz.update_aircon_status(status_item, self.status[status_item])
-                    
-     
+                       
     def update_temp_history(self, name, temperature, log_aircon_temp_data): # Called by a multisensor object upon a temperature reading so that temperature history can be logged
         if log_aircon_temp_data == True: # Only log data if requested in log_aircon_temp_data
             if name in self.indoor_zone: # Only capture temperature history for known indoor names
-                #if find_key != None: # Only capture temperature history for known indoor names
                 #print('Temperature History Logging', 'Name', name, 'Temperature', temperature)
                 current_temp_update_time = time.time()
                 #print('Current Time', current_temp_update_time, 'Previous Update Time for', name, self.temperature_update_time[name])
@@ -2037,7 +2068,6 @@ class AirconClass(object):
                 self.temperature_update_time[name] = current_temp_update_time # Record the time of the temp update. Used to ignore double temp updates from the sensors
   
     def mean_active_temp_change_rate(self, zone_list): # Called by update_temp_history to calculate the mean zone temperature change rate for active sensors within the specified zone
-    # NEEDS REFACTORING
         den_sum = 0
         for item in zone_list:
             if self.active_temperature_change_rate[item] != 0:
@@ -2051,12 +2081,11 @@ class AirconClass(object):
             active_zone_change_rate = 0.0
         return active_zone_change_rate
     
-    def update_active_thermostats(self, mode): # Called by 'set_thermosat' method to ensure that active sensors have the same mode setting as the Indoor Control
+    def update_active_thermostats(self, mode): # Called by 'set_thermostat' method to ensure that active sensors have the same mode setting as the Indoor Control
         for thermostat in self.indoor_zone:
             if self.thermostat_status[thermostat]['Active'] == 1 and mode != 'Off':
                 self.thermostat_status[thermostat]['Mode'] = mode
                 homebridge.update_aircon_thermostat(thermostat, mode)
-
 
     def update_zone_temps(self): # Called by 'process_aircon_buttons' and the 'capture_domoticz_sensor_data' modules to ensure that the "Day", "Night" and "Indoor" Zones current temperatures
         #are updated with active temperature sensor readings and the "Indoor" Target Temperature is updated with the target temperatures of the active sensor settings
@@ -2067,7 +2096,6 @@ class AirconClass(object):
             homebridge.update_control_thermostat_temps(self.settings['Indoor_zone_target_temperature'], self.settings['Indoor_zone_current_temperature'])
     
     def mean_active_temperature(self, zone): # Called by update_zone_temps to calculate the mean target and current zone temperatures of a zone using the data from active sensors
-    #REFACTORED
         den_sum = 0
         for name in zone: # Add the settings of each sensor in the zone to determine how many are active
             den_sum += self.thermostat_status[name]['Active']
@@ -2092,26 +2120,11 @@ class AirconClass(object):
         if self.status['Remote Operation'] == True: # Only invoke aircon control is the aircon is under control of the Raspberry Pi
             #print ("Thermo Off Mode", self.settings)
             if self.settings['Thermo Off'] == False: # Only invoke aircon control if the control thermostat is not set to 'Off'
+                self.settings['Ventilate'] = False
                 #print("Thermo On Mode")
                 if self.settings['Indoor_zone_sensor_active'] == 1: # Only invoke aircon control if at least one aircon temp sensor is active
                     #print("Indoor Active")
-                    # Prepare data for power consumption logging
-                    update_date_time = datetime.now()
-                    current_power_rate = self.check_power_rate(update_date_time)
-                    if self.status['Cool'] == True:
-                        mode = 'Cool'
-                    elif self.status['Heat'] == True:
-                        mode = 'Heat'
-                    elif self.status['Fan'] == True:
-                        mode = 'Idle'
-                    else:
-                        mode = 'Off'
-                    #print('aircon_previous_power_rate =', self.settings['aircon_previous_power_rate'], 'aircon_current_power_rate =', current_power_rate)
-                    if current_power_rate != self.settings['aircon_previous_power_rate']: # If the power rate has changed
-                        mgr.print_update("Power Rate Changed from $" + str(self.settings['aircon_previous_power_rate']) + " per kWH to $" + str(current_power_rate) + " per kWH on ")
-                        self.update_aircon_power_log(mode, current_power_rate, time.time(), self.log_aircon_cost_data)  # Update aircon power log if there's a change of power rate
-                    if mode != self.settings['aircon_previous_mode']: # If the airon mode has changed
-                        self.update_aircon_power_log(mode, current_power_rate, time.time(), self.log_aircon_cost_data)  # Update aircon power log if there's a change of mode
+                    mode, self.settings = self.check_power_change(self.status, self.settings, self.log_aircon_cost_data) # Check for power rate or consumption change
                     if self.settings['Day_zone_sensor_active'] ^ self.settings['Night_zone_sensor_active'] == 1: #If only one zone is active
                         #print("Only One Zone Active")
                         previous_target_day_zone = self.settings['target_day_zone'] # Record the current damper position to determine if a change needs to invoked
@@ -2178,22 +2191,29 @@ class AirconClass(object):
                 else: # Stay in Fan Mode if no valid actual temp reading
                     print ("No Valid Temp")
                     self.set_aircon_mode("Idle")
-            else: # Update the aircon power log when put into Thermo Off Mode
-                if self.settings['aircon_previous_mode'] != 'Off':
-                    mode = 'Off'
-                    update_date_time = datetime.now()
-                    current_power_rate = self.check_power_rate(update_date_time)
-                    self.update_aircon_power_log(mode, current_power_rate, time.time(), self.log_aircon_cost_data)
+            else: # If Aircon is off or in Ventilation Mode
+                if self.settings['Ventilate'] == False: # If the aircon is off
+                    if self.settings['aircon_previous_mode'] != 'Off': # Update the aircon power log when put into Thermo Off Mode
+                        mode = 'Off'
+                        update_date_time = datetime.now()
+                        current_power_rate = self.check_power_rate(update_date_time)
+                        self.update_aircon_power_log(mode, current_power_rate, time.time(), self.log_aircon_cost_data)
+                else: # If the aircon is in Ventilation Mode
+                    if self.settings['target_day_zone'] != 60: # If the damper is not set to both zones
+                        previous_target_day_zone = self.settings['target_day_zone'] # Record the current damper position to determine if a change needs to invoked
+                        self.settings['target_day_zone'] = 60 # Set the damper to both zones
+                        self.move_damper(self.settings['target_day_zone'], self.log_damper_data)
+                    mode, self.settings = self.check_power_change(self.status, self.settings, self.log_aircon_cost_data)         
 
     def set_aircon_mode(self, mode): # Called by 'control_aircon' to set aircon mode
         if mode == 'Heat':
             if self.status['Heat'] == False: # Only set to heat mode if it's not already been done
                 mgr.print_update("Heat Mode Selected on ")
-                self.print_aircon_mode_state() 
-                client.publish(self.outgoing_mqtt_topic, '{"service": "Heat Mode"}')
+                self.print_aircon_mode_state()
+                self.send_aircon_command('Heat Mode')
                 self.status['Heat'] = True
             if self.status['Fan Hi'] == False: # Only set to Fan to Hi if it's not already been done
-                client.publish(self.outgoing_mqtt_topic, '{"service": "Fan Hi"}')
+                self.send_aircon_command('Fan Hi')
                 self.status['Fan Hi'] = True
         if mode == 'Cool':
             if self.status['Cool'] == False: # Only set to cool mode if it's not already been done
@@ -2202,21 +2222,44 @@ class AirconClass(object):
                 client.publish(self.outgoing_mqtt_topic, '{"service": "Cool Mode"}')
                 self.status['Cool'] = True
             if self.status['Fan Hi'] == False: # Only set to Fan to Hi if it's not already been done
-                client.publish(self.outgoing_mqtt_topic, '{"service": "Fan Hi"}')
+                self.send_aircon_command('Fan Hi')
                 self.status['Fan Hi'] = True
         if mode == 'Idle':
             if self.status['Fan'] == False: # Only set to Fan Mode if it's not already been done
                 mgr.print_update("Idle Mode Selected on ")
                 self.print_aircon_mode_state() 
-                client.publish(self.outgoing_mqtt_topic, '{"service": "Fan Mode"}')
+                self.send_aircon_command('Fan Mode')
                 self.status['Fan'] = True
             if self.status['Fan Lo'] == False: # Only set Fan to Lo if it's not already been done
-                client.publish(self.outgoing_mqtt_topic, '{"service": "Fan Lo"}')
+                self.send_aircon_command('Fan Lo')
                 self.status['Fan Lo'] = True
 
     def print_aircon_mode_state(self):
         print("Day Temp is", round(self.settings['Day_zone_current_temperature'], 1), "Degrees. Day Target Temp is", round(self.settings['Day_zone_target_temperature'], 1), "Degrees. Night Temp is",
                                           round(self.settings['Night_zone_current_temperature'], 1), "Degrees. Night Target Temp is", round(self.settings['Night_zone_target_temperature'], 1), "Degrees")
+
+    def check_power_change(self, status, settings, log_aircon_cost_data):
+        # Prepare data for power consumption logging
+        update_date_time = datetime.now()
+        current_power_rate = self.check_power_rate(update_date_time)
+        if settings['Ventilate'] == False: # Set mode based on aircon status if the aircon is not in Ventilate Setting
+            if status['Cool'] == True:
+                mode = 'Cool'
+            elif status['Heat'] == True:
+                mode = 'Heat'
+            elif status['Fan'] == True:
+                mode = 'Idle'
+            else:
+                mode = 'Off'
+        else: # Always set mode to 'Idle' if the aircon is in Ventilate Setting
+            mode = 'Idle'
+        #print('aircon_previous_power_rate =', settings['aircon_previous_power_rate'], 'aircon_current_power_rate =', current_power_rate)
+        if current_power_rate != settings['aircon_previous_power_rate']: # If the power rate has changed
+            mgr.print_update("Power Rate Changed from $" + str(settings['aircon_previous_power_rate']) + " per kWH to $" + str(current_power_rate) + " per kWH on ")
+            self.update_aircon_power_log(mode, current_power_rate, time.time(), log_aircon_cost_data)  # Update aircon power log if there's a change of power rate
+        if mode != settings['aircon_previous_mode']: # If the aircon mode has changed
+            self.update_aircon_power_log(mode, current_power_rate, time.time(), log_aircon_cost_data)  # Update aircon power log if there's a change of mode
+        return mode, settings                   
         
     def check_power_rate(self, update_date_time):
         update_day = update_date_time.strftime('%A')
@@ -2277,12 +2320,6 @@ class AirconClass(object):
         client.publish(self.outgoing_mqtt_topic, json.dumps(aircon_json))
         homebridge.set_target_damper_position(damper_percent)
 
-    #def reset_active_temp_dictionaries(): #Reset Active Temperature Dictionary and change rate when the relevant aircon status is updated, in order to get stable active temp history readings
-        #for key in active_temperature_history:
-            #active_temperature_history[key] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        #for key in self.active_temperature_change_rate:
-            #self.active_temperature_change_rate[key] = 0
-
     def set_dual_zone_damper(self, day_zone_gap, night_zone_gap, day_zone_gap_max, night_zone_gap_max): # Called by control_aircon in dual zone mode to set the damper to an optimal position, based on relative temperature gaps
         if day_zone_gap == 0 and night_zone_gap == 0: # If both zones are equal to their target temperatures
             #print('Damper: Balance Zones')
@@ -2296,8 +2333,6 @@ class AirconClass(object):
         else: # If both zones have passed their target temperatures or neither zone has passed its target temperature or only one zone is equal to its target temperature
             day_proportion = day_zone_gap / (day_zone_gap + night_zone_gap)
             night_proportion = night_zone_gap / (day_zone_gap + night_zone_gap)
-            #optimal_day_zone_not_passed = 60 * day_proportion / (0.6 * day_proportion + 0.4 * night_proportion) # Damper is biased towards Day Zone
-            #optimal_day_zone_passed = 60 * night_proportion / (0.6 * night_proportion + 0.4 * day_proportion) # Damper is biased towards Day Zone
             if day_zone_gap >= 0 and night_zone_gap >= 0: # If neither zone has passed its target temperature or one has met and the other has not passed its target temperature
                 #print('Damper Algorithm: Neither Zone Passed Target Temperature')
                 optimal_day_zone_not_passed = 60 * day_proportion / (0.6 * day_proportion + 0.4 * night_proportion) # Damper is biased towards Day Zone
@@ -2347,7 +2382,6 @@ class AirconClass(object):
                   round(self.settings['Night_zone_current_temperature'],1), "Degrees. Night Target Temp is", self.settings['Night_zone_target_temperature'], "Degrees")
 
     def populate_starting_aircon_effectiveness(self):
-        # NEEDS REFACTORING.
         # Read log file
         name = '/home/pi/HomeManager/effectiveness.log'
         f = open(name, 'r')
@@ -2376,11 +2410,6 @@ class AirconClass(object):
             for key in self.max_heating_effectiveness:
                 start_required_data, end_required_data = self.find_dictionary_data(data_log[max_start : max_end], key)
                 self.min_cooling_effectiveness[key] = round(float(dictionary_field[start_required_data + len(key) + 3 : end_required_data]), 1)
-        #time.sleep(5)
-        #print("Max Heating Log:", self.max_heating_effectiveness)
-        #print("Max Cooling Log:", self.max_cooling_effectiveness)
-        #print("Min Heating Log:", self.max_heating_effectiveness)
-        #print("Min Cooling Log:", self.min_cooling_effectiveness)
 
     def populate_aircon_power_status(self):
         # Read log file
@@ -2476,6 +2505,9 @@ class Foobot:
         except ValueError:
             mgr.print_update('Air Purifier JSON Error on ')
             return('JSON Error')
+        except ConnectionError:
+            mgr.print_update('Air Purifier Connection Error on ')
+            return('Connection Error')
 
 class FoobotDevice:
     ## Extracted from https://github.com/philipbl/pyfoobot
@@ -2524,7 +2556,7 @@ class BlueAirClass(object):
         if self.auto == True: # Readings only come from auto units
             self.readings_update_time = time.time()
             latest_data = self.device.latest()
-            if latest_data != 'JSON Error': # Capture New readings is there's valid data, otherwise, keep previous readings
+            if latest_data != 'JSON Error' and latest_data != 'Connection Error': # Capture New readings is there's valid data, otherwise, keep previous readings
                 mgr.print_update('Capturing Air Purifier Readings on ')
                 self.air_readings['part_2_5'] = latest_data['datapoints'][0][1]
                 self.air_readings['co2'] = latest_data['datapoints'][0][4]
@@ -2555,7 +2587,7 @@ class BlueAirClass(object):
         self.settings_update_time = time.time()
         self.settings_changed = False
         air_purifier_settings = self.get_device_settings()
-        if air_purifier_settings != 'JSON Error': # Capture New readings is there's valid data, otherwise, keep previous settings
+        if air_purifier_settings != 'JSON Error' and air_purifier_settings != 'Connection Error': # Capture New readings is there's valid data, otherwise, keep previous settings
             #print('Capturing Air Purifier Settings')
             if self.auto == True: # Auto BlueAir units have mode and fan speed in different list locations from manual units
                 self.current_air_purifier_settings['Mode'] = air_purifier_settings[9]['currentValue']
