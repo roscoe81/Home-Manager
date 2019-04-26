@@ -1,4 +1,4 @@
-#Northcliff Home Manager - 7.27 Gen
+#Northcliff Home Manager - 7.32 Gen
 #!/usr/bin/env python
 
 import paho.mqtt.client as mqtt
@@ -9,6 +9,7 @@ import string
 import json
 import socket
 import requests
+import os
 
 class NorthcliffHomeManagerClass(object):
     def __init__(self):
@@ -126,8 +127,73 @@ class NorthcliffHomeManagerClass(object):
         print('')
         print(print_message + today.strftime('%A %d %B %Y @ %H:%M:%S'))
 
+    def log_key_states(self, reason):
+        # Log Door, Blind and Powerpoint States
+        key_state_log = {'Door State': {}, 'Blind Status': {}, 'Blind Door State': {}, 'Blind Auto Override': {}, 'Powerpoint State': {}, 'Aircon Thermostat Status': {},
+                          'Reason': reason}
+        for aircon_name in self.aircon_config:
+            key_state_log['Aircon Thermostat Status'][aircon_name] = {}
+        for name in self.door_sensor_names_locations:
+            key_state_log['Door State'][name] = door_sensor[name].current_door_opened
+        for blind in self.window_blind_config:
+            key_state_log['Blind Status'][blind] = self.window_blind_config[blind]['status']
+            key_state_log['Blind Door State'][blind] = self.window_blind_config[blind]['blind_doors']
+            key_state_log['Blind Auto Override'][blind] = window_blind[blind].auto_override
+        for name in self.powerpoint_names_device_id:
+            key_state_log['Powerpoint State'][name] = powerpoint[name].powerpoint_state
+        for aircon_name in self.aircon_config:
+            logged_thermostats = self.aircon_config[aircon_name]['Day Zone'] + self.aircon_config[aircon_name]['Night Zone']
+            for thermostat in logged_thermostats:
+                key_state_log['Aircon Thermostat Status'][aircon_name][thermostat] = aircon[aircon_name].thermostat_status[thermostat]
+        #print('Key State Log', key_state_log)
+        with open('/home/pi/HomeManager/key_state.log', 'w') as f:
+            f.write(json.dumps(key_state_log))
+
+    def retrieve_key_states(self):
+        name = '/home/pi/HomeManager/key_state.log'
+        f = open(name, 'r')
+        parsed_key_states = json.loads(f.read())
+        #print('Retrieved Key States', parsed_key_states)
+        print ('Previous shutdown reason was', parsed_key_states['Reason'])
+        for name in parsed_key_states['Door State']:
+            door_sensor[name].current_door_opened = parsed_key_states['Door State'][name]
+            door_sensor[name].previous_door_opened = parsed_key_states['Door State'][name]
+            homebridge.update_door_state(name, self.door_sensor_names_locations[name], parsed_key_states['Door State'][name], False)
+            if door_sensor[name].doorbell_door == True:
+                doorbell.update_doorbell_door_state(self.doorbell_door, parsed_key_states['Door State'][name])
+        for blind in parsed_key_states['Blind Status']:
+            self.window_blind_config[blind]['status'] = parsed_key_states['Blind Status'][blind]
+            homebridge.update_blind_status(blind, self.window_blind_config[blind])
+        for blind in parsed_key_states['Blind Door State']:
+            self.window_blind_config[blind]['blind_doors'] = parsed_key_states['Blind Door State'][blind]
+        for blind in parsed_key_states['Blind Auto Override']:
+            window_blind[blind].auto_override = parsed_key_states['Blind Auto Override'][blind]
+            homebridge.set_auto_blind_override_button(blind, parsed_key_states['Blind Auto Override'][blind])
+        for name in parsed_key_states['Powerpoint State']:
+            powerpoint[name].powerpoint_state = parsed_key_states['Powerpoint State'][name]
+            homebridge.update_powerpoint_state(name, parsed_key_states['Powerpoint State'][name])
+        for aircon_name in self.aircon_config:
+            for thermostat in parsed_key_states['Aircon Thermostat Status'][aircon_name]:
+                aircon[aircon_name].thermostat_status[thermostat]['Target Temperature'] = parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Target Temperature']
+                homebridge.update_thermostat_target_temp(thermostat, parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Target Temperature'])
+                aircon[aircon_name].thermostat_status[thermostat]['Mode'] = parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Mode']
+                homebridge.update_aircon_thermostat(thermostat, parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Mode'])
+                aircon[aircon_name].thermostat_status[thermostat]['Active'] = parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Active']
+                
+    def shutdown(self, reason):
+        self.log_key_states(reason)
+        # Shut down Aircons
+        for aircon_name in self.aircon_config:
+            aircon[aircon_name].shut_down()
+        client.loop_stop() # Stop mqtt monitoring
+        self.print_update('Home Manager Shut Down due to ' + reason + ' on ')
+            
+
     def run(self): # The main Home Manager start-up, loop and shut-down code                          
         try:
+            # Retrieve logged key states
+            self.retrieve_key_states()
+            homebridge.reset_reboot_button()
             # Capture Air Purifier readings and settings on startup and update homebridge
             for name in self.air_purifier_names:
                 if self.air_purifier_names[name]['Auto'] == True: # Readings only come from auto units
@@ -140,28 +206,17 @@ class NorthcliffHomeManagerClass(object):
             for aircon_name in mgr.aircon_config:
                 aircon[aircon_name].start_up()
             doorbell.update_doorbell_status() # Get doorbell status on startup
-            # Switch Auto Blind Override Homebridge buttons off
-            for blind_room in self.window_blind_config:
-                homebridge.reset_auto_blind_override_button(blind_room)
             # Initialise multisensor readings on homebridge to start-up settings
             for name in self.multisensor_names:    
                 homebridge.update_temperature(name, multisensor[name].sensor_types_with_value['Temperature'])
                 homebridge.update_humidity(name, multisensor[name].sensor_types_with_value['Humidity'])
                 homebridge.update_light_level(name, multisensor[name].sensor_types_with_value['Light Level'])
                 homebridge.update_motion(name, multisensor[name].sensor_types_with_value['Motion'])
-            # Initialise Powerpoint states
-            for name in self.powerpoint_names_device_id:
-                homebridge.update_powerpoint_state(name, 0)
-            # Initialise Door Sensor states
-            for name in self.door_sensor_names_locations:
-                homebridge.update_door_state(name, self.door_sensor_names_locations[name], True, False)
-            # Initialise Doorbell Door Sensor State
-            doorbell.update_doorbell_door_state(self.doorbell_door, True)
             # Initialise Garage Door state
             homebridge.update_garage_door('Closing')
             homebridge.update_garage_door('Closed')
             while True: # The main Home Manager Loop
-                aircon['Aircon'].control_aircon() # Call the method that controls the aircon. To do: dAd support for mutliple aircons
+                aircon['Aircon'].control_aircon() # Call the method that controls the aircon. To do: Add support for mutliple aircons
                 # The following tests and method calls are here in the main code loop, rather than the on_message method to avoid time.sleep calls in the window blind object delaying incoming mqtt message handling
                 if self.call_room_sunlight_control['State'] == True: # If there's a new reading from the blind control light sensor
                     blind = self.call_room_sunlight_control['Blind'] # Identify the blind
@@ -200,12 +255,7 @@ class NorthcliffHomeManagerClass(object):
                             homebridge.set_air_purifier_state(name, mode, fan_speed, child_lock, led_brightness, filter_status)
                   
         except KeyboardInterrupt:
-            # Shut down Aircons
-            for aircon_name in mgr.aircon_config:
-                aircon[aircon_name].shut_down()
-            client.loop_stop() # Stop mqtt monitoring
-            self.print_update('Home Manager Shut Down at ')
-
+            self.shutdown('Keyboard Interrupt')
 
 class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
     def __init__(self, outgoing_mqtt_topic, outdoor_zone, outdoor_sensors_name, aircon_config):
@@ -269,6 +319,9 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
         self.PM2_5_service_name_map = {'Living': 'Living PM2.5'}
         self.air_purifier_format = {'name': 'Air Purifier', 'service' :'AirPurifier'}
         self.air_purifier_filter_format = {'name': 'Air Purifier', 'service' :'FilterMaintenance'}
+        self.reboot_format = {'name': 'Reboot', 'service_name': 'Reboot Arm', 'characteristic': 'On'}
+        self.reboot_trigger_format = {'name': 'Reboot', 'service_name': 'Reboot Trigger', 'characteristic': 'On'}
+        self.reboot_armed = False
 
     def capture_homebridge_buttons(self, parsed_json):
         if parsed_json['name'] == self.dimmer_format['name']: # If it's a dimmer button
@@ -285,6 +338,8 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
             self.process_aircon_button(parsed_json)
         elif parsed_json['name'] == self.air_purifier_format['name']: # If it's an air purifier button.
             self.process_air_purifier_button(parsed_json)
+        elif parsed_json['name'] == self.reboot_format['name']: # If it's a reboot button.
+            self.process_reboot_button(parsed_json)
         else:
             print('Invalid homebridge button received:', parsed_json['name'])
             pass
@@ -475,6 +530,28 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
         else:
             print('Unknown Air Purifier Button', characteristic)
 
+    def process_reboot_button(self, parsed_json):
+        if parsed_json['service_name'] == self.reboot_format['service_name']:
+            self.reboot_armed = parsed_json['value']
+            if self.reboot_armed == True:
+                mgr.print_update('Reboot Armed on ')
+            else:
+                mgr.print_update('Reboot Disarmed on ')
+        if parsed_json['service_name'] == self.reboot_trigger_format['service_name']:
+            if self.reboot_armed == True:
+                mgr.print_update('Reboot Armed and Triggered on ')
+                time.sleep(1)
+                self.reset_reboot_button()
+                time.sleep(1)
+                mgr.shutdown('Reboot Button')
+                time.sleep(2)
+                os.system('sudo reboot')
+            else:
+                mgr.print_update('Reboot Trigger Command without arming received on ')
+                time.sleep(1)
+                self.reset_reboot_button()
+                time.sleep(1)
+
     def switch_powerpoint(self, parsed_json):
         powerpoint_name = parsed_json['service_name']
         switch_state = parsed_json['value']
@@ -618,11 +695,11 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
         else:
             print("Invalid Garage Door Status Message", service)
                
-    def reset_auto_blind_override_button(self, blind_room):
+    def set_auto_blind_override_button(self, blind_room, state):
         #print('Homebridge: Reset Auto Blind Override Button', blind_room)
         homebridge_json = self.auto_blind_override_button_format
         homebridge_json['name'] = blind_room
-        homebridge_json['value'] = False
+        homebridge_json['value'] = state
         homebridge_payload = json.dumps(homebridge_json)
         # Publish homebridge payload with button state off
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
@@ -667,7 +744,14 @@ class HomebridgeClass(object): # To do. Add ability to manage multiple aircons
         homebridge_json['value'] = False
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
 
-    
+    def reset_reboot_button(self):
+        homebridge_json = self.reboot_format
+        homebridge_json['value'] = False # Prepare to return reboot switch state to off
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json = self.reboot_trigger_format
+        homebridge_json['value'] = False # Prepare to return reboot trigger state to off
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        
     def update_aircon_status(self, status_item, state):
         #print('Homebridge: Update Aircon Status', status_item, state)
         homebridge_json = self.aircon_status_format # To do. Add ability to manage multiple aircons
@@ -2502,12 +2586,9 @@ class Foobot:
         try:
             good_json = response.json()
             return(good_json)
-        except ValueError:
-            mgr.print_update('Air Purifier JSON Error on ')
-            return('JSON Error')
-        except ConnectionError:
-            mgr.print_update('Air Purifier Connection Error on ')
-            return('Connection Error')
+        except requests.exceptions.RequestException as blueair_error:
+            print ('BlueAir Comms Error', blueair_error)
+            return('BlueAir Comms Error')
 
 class FoobotDevice:
     ## Extracted from https://github.com/philipbl/pyfoobot
@@ -2556,7 +2637,7 @@ class BlueAirClass(object):
         if self.auto == True: # Readings only come from auto units
             self.readings_update_time = time.time()
             latest_data = self.device.latest()
-            if latest_data != 'JSON Error' and latest_data != 'Connection Error': # Capture New readings is there's valid data, otherwise, keep previous readings
+            if (latest_data != 'BlueAir Comms Error') and (type(latest_data['datapoints'][0]) is list) and (len(latest_data['datapoints'][0]) > 6): # Capture New readings is there's valid data, otherwise, keep previous readings
                 mgr.print_update('Capturing Air Purifier Readings on ')
                 self.air_readings['part_2_5'] = latest_data['datapoints'][0][1]
                 self.air_readings['co2'] = latest_data['datapoints'][0][4]
@@ -2581,32 +2662,48 @@ class BlueAirClass(object):
             else:
                 mgr.print_update('Air Purifier Readings Error on ')
             return(self.readings_update_time, self.air_readings['part_2_5'], self.air_readings['co2'], self.air_readings['voc'], self.max_aqi, self.max_co2, self.co2_threshold, self.part_2_5_threshold)
+        else:
+            pass
 
 
     def capture_settings(self): # Capture device settings
         self.settings_update_time = time.time()
         self.settings_changed = False
         air_purifier_settings = self.get_device_settings()
-        if air_purifier_settings != 'JSON Error' and air_purifier_settings != 'Connection Error': # Capture New readings is there's valid data, otherwise, keep previous settings
-            #print('Capturing Air Purifier Settings')
+        if air_purifier_settings != 'BlueAir Comms Error': # Capture new settings is there's valid data, otherwise, keep previous settings
+            #print('Capturing Air Purifier Settings for', self.name)
             if self.auto == True: # Auto BlueAir units have mode and fan speed in different list locations from manual units
-                self.current_air_purifier_settings['Mode'] = air_purifier_settings[9]['currentValue']
-                self.current_air_purifier_settings['Fan Speed'] = air_purifier_settings[5]['currentValue']
-                self.current_air_purifier_settings['Filter Status'] = air_purifier_settings[8]['currentValue']
+                if (type(air_purifier_settings) is list) and (len(air_purifier_settings) > 9):
+                    self.current_air_purifier_settings['LED Brightness'] = air_purifier_settings[1]['currentValue']
+                    self.current_air_purifier_settings['Child Lock'] = air_purifier_settings[2]['currentValue']
+                    self.current_air_purifier_settings['Fan Speed'] = air_purifier_settings[5]['currentValue']
+                    self.current_air_purifier_settings['Filter Status'] = air_purifier_settings[8]['currentValue']
+                    self.current_air_purifier_settings['Mode'] = air_purifier_settings[9]['currentValue']
+                    valid_data = True
+                else:
+                    valid_data = False
             else:
-                self.current_air_purifier_settings['Mode'] = air_purifier_settings[6]['currentValue']
-                self.current_air_purifier_settings['Fan Speed'] = air_purifier_settings[3]['currentValue']
-                self.current_air_purifier_settings['Filter Status'] = air_purifier_settings[5]['currentValue']
-            self.current_air_purifier_settings['Child Lock'] = air_purifier_settings[2]['currentValue']
-            self.current_air_purifier_settings['LED Brightness'] = air_purifier_settings[1]['currentValue']
-            for setting in self.previous_air_purifier_settings:
-                if self.previous_air_purifier_settings[setting] != self.current_air_purifier_settings[setting]:
-                    self.settings_changed = True
-                    mgr.print_update(self.name + ' Air Purifier ' + setting + ' setting changed from ' + self.previous_air_purifier_settings[setting] + ' to ' +
-                                     self.current_air_purifier_settings[setting] + ' on ')
-                    self.previous_air_purifier_settings[setting] = self.current_air_purifier_settings[setting]
+                if (type(air_purifier_settings) is list) and (len(air_purifier_settings)) > 6:
+                    self.current_air_purifier_settings['LED Brightness'] = air_purifier_settings[1]['currentValue']
+                    self.current_air_purifier_settings['Child Lock'] = air_purifier_settings[2]['currentValue']
+                    self.current_air_purifier_settings['Fan Speed'] = air_purifier_settings[3]['currentValue']
+                    self.current_air_purifier_settings['Filter Status'] = air_purifier_settings[5]['currentValue']
+                    self.current_air_purifier_settings['Mode'] = air_purifier_settings[6]['currentValue']
+                    valid_data = True
+                else:
+                    valid_data = False
+            if valid_data == True:
+                for setting in self.previous_air_purifier_settings:
+                    if self.previous_air_purifier_settings[setting] != self.current_air_purifier_settings[setting]:
+                        self.settings_changed = True
+                        mgr.print_update(self.name + ' Air Purifier ' + setting + ' setting changed from ' + self.previous_air_purifier_settings[setting] + ' to ' +
+                                         self.current_air_purifier_settings[setting] + ' on ')
+                        self.previous_air_purifier_settings[setting] = self.current_air_purifier_settings[setting]
+            else:
+                mgr.print_update('Air Purifier Settings Data Format Error for ' + self.name + ' on ')
+                print(air_purifier_settings)
         else:
-            mgr.print_update('Air Purifier Settings Error on ')
+            mgr.print_update('Air Purifier Settings Comms Error on ')
         return (self.settings_changed, self.settings_update_time, self.current_air_purifier_settings['Mode'],
                 self.current_air_purifier_settings['Fan Speed'], self.current_air_purifier_settings['Child Lock'],
                 self.current_air_purifier_settings['LED Brightness'], self.current_air_purifier_settings['Filter Status'])
@@ -2690,7 +2787,7 @@ if __name__ == '__main__': # This is where to overall code kicks off
     # Use a dictionary comprehension to create a light dimmer instance for each dimmer, with its idx number, initial switch state as False and initial brightness value 0%
     light_dimmer = {name: LightDimmerClass(name, mgr.light_dimmer_names_device_id[name], False, 0) for name in mgr.light_dimmer_names_device_id}
     # Use a dictionary comprehension to create a powerpoint instance for each powerpoint, with its idx number, initial switch state as False
-    powerpoint = {name: PowerpointClass(name, mgr.powerpoint_names_device_id[name], False) for name in mgr.powerpoint_names_device_id}
+    powerpoint = {name: PowerpointClass(name, mgr.powerpoint_names_device_id[name], 0) for name in mgr.powerpoint_names_device_id}
     # Use a dictionary comprehension to create a flood sensor instance for each flood sensor
     flood_sensor = {name: FloodSensorClass(name) for name in mgr.flood_sensor_names}
     # Create a Garage Door Controller instance
