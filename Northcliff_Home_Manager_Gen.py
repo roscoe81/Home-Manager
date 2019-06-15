@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.43 _ Gen Fix Max and Min heating Effectiveness Log population
+#Northcliff Home Manager - 7.44 _ update zone temps in retrieval of key states
 #Requires minimum Doorbell V2.0 and Aircon V3.44
 
 import paho.mqtt.client as mqtt
@@ -188,6 +188,7 @@ class NorthcliffHomeManagerClass(object):
                 aircon[aircon_name].thermostat_status[thermostat]['Active'] = parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Active']
             aircon[aircon_name].settings['indoor_thermo_mode'] = parsed_key_states['Aircon Thermo Mode'][aircon_name]
             aircon[aircon_name].settings['indoor_zone_sensor_active'] = parsed_key_states['Aircon Thermo Active'][aircon_name]
+            aircon[aircon_name].update_zone_temps()
         for air_purifier_name in parsed_key_states['Air Purifier Max Co2']:
             air_purifier[air_purifier_name].max_co2 = parsed_key_states['Air Purifier Max Co2'][air_purifier_name]
                 
