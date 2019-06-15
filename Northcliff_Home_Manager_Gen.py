@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.42 _ Gen
+#Northcliff Home Manager - 7.43 _ Gen Fix Max and Min heating Effectiveness Log population
 #Requires minimum Doorbell V2.0 and Aircon V3.44
 
 import paho.mqtt.client as mqtt
@@ -2599,7 +2599,7 @@ class AirconClass(object):
             dictionary_field = data_log[max_start : max_end]
             for key in self.max_heating_effectiveness:
                 start_required_data, end_required_data = self.find_dictionary_data(data_log[max_start : max_end], key)
-                self.max_heating_effectiveness[key] = round(float(dictionary_field[start_required_data + len(key) + 3 : end_required_data]), 1)
+                self.min_heating_effectiveness[key] = round(float(dictionary_field[start_required_data + len(key) + 3 : end_required_data]), 1)
         max_start, max_end = self.find_last_substring(data_log, '; Min Cool', '}') # Find last instance of Min Cool
         if max_start != 11: # Only update the dictionary if data has been logged
             dictionary_field = data_log[max_start : max_end]
