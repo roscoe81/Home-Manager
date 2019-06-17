@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.47 Gen
+#Northcliff Home Manager - 7.49 Gen
 # Requires minimum Doorbell V2.0 and Aircon V3.44
 
 import paho.mqtt.client as mqtt
@@ -314,7 +314,9 @@ class HomebridgeClass(object):
         self.aircon_thermostat_mode_map = {0: 'Off', 1: 'Heat', 2: 'Cool'}
         self.aircon_thermostat_incoming_mode_map = {'Off': 0, 'Heat': 1, 'Cool': 2}
         # Set up aircon homebridge button types (Indicator, Position Indicator or Thermostat Control)
-        self.aircon_button_type = {'Remote Operation': 'Indicator', 'Heat': 'Indicator', 'Cool': 'Indicator', 'Fan': 'Indicator', 'Fan Hi': 'Indicator', 'Fan Lo': 'Indicator', 'Heating': 'Indicator', 'Compressor': 'Indicator', 'Terminated': 'Indicator', 'Damper': 'Position Indicator', 'Filter': 'Indicator', 'Malfunction': 'Indicator', 'Ventilation': 'Switch'}
+        self.aircon_button_type = {'Remote Operation': 'Indicator', 'Heat': 'Indicator', 'Cool': 'Indicator', 'Fan': 'Indicator', 'Fan Hi': 'Indicator',
+                                   'Fan Lo': 'Indicator', 'Heating': 'Indicator', 'Compressor': 'Indicator', 'Terminated': 'Indicator', 'Damper': 'Position Indicator',
+                                   'Filter': 'Indicator', 'Malfunction': 'Indicator', 'Ventilation': 'Switch'}
         self.aircon_thermostat_format = {}
         self.aircon_ventilation_button_format = {}
         self.aircon_control_thermostat_name = {}
@@ -2210,7 +2212,7 @@ class AirconClass(object):
                     print('Invalid aircon sensor', name)
             else:
                 self.active_temperature_history[name][0] = 0.0
-            #print('Temp History after shift and pop', self.active_temperature_history)
+            #print(name, 'Temp History after shift and pop', self.active_temperature_history[name])
             #print('')
             valid_temp_history = True
             for pointer in range (0, 10):
@@ -2229,12 +2231,12 @@ class AirconClass(object):
                     today = datetime.now()
                     time_data = time.time()
                     time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
-                    json_log_data = {'Time': time_stamp, 'Sensor': name, 'Active Temp History': self.active_temperature_history[name],
+                    json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Sensor': name, 'Active Temp History': self.active_temperature_history[name],
                                  'Active Temp Change Rate': self.active_temperature_change_rate[name], 'Active Day Change Rate': self.active_temperature_change_rate['Day'],
                                      'Active Night Change Rate': self.active_temperature_change_rate['Night'], 'Active Indoor Change Rate': self.active_temperature_change_rate['Indoor'],
                                      'Damper Position': self.status['Damper']}
                     with open(self.aircon_config['Spot Temperature History Log'], 'a') as f:
-                        f.write(',\n"' + str(time_data) + '": ' + json.dumps(json_log_data))
+                        f.write(',\n' + json.dumps(json_log_data))
                     if self.status['Heat'] == True:
                         log = False
                         if self.active_temperature_change_rate[name] > self.max_heating_effectiveness[name]: # Record Maximum only
@@ -2261,10 +2263,10 @@ class AirconClass(object):
                             today = datetime.now()
                             time_data = time.time()
                             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
-                            json_log_data = {'Time': time_stamp, 'Max Heat': self.max_heating_effectiveness, 'Min Heat': self.min_heating_effectiveness,
+                            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Max Heat': self.max_heating_effectiveness, 'Min Heat': self.min_heating_effectiveness,
                                      'Heating Effectiveness Active Temp History': self.active_temperature_history}
                             with open(self.aircon_config['Effectiveness Log'], 'a') as f:
-                                f.write(',\n"' + str(time_data) + '": ' + json.dumps(json_log_data))             
+                                f.write(',\n' + json.dumps(json_log_data))
                     elif self.status['Cool'] == True:
                         log = False
                         if 0 - self.active_temperature_change_rate[name] > self.max_cooling_effectiveness[name]: # Record Maximum only
@@ -2291,10 +2293,10 @@ class AirconClass(object):
                             today = datetime.now()
                             time_data = time.time()
                             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')       
-                            json_log_data = {'Time': time_stamp, 'Max Cool': self.max_cooling_effectiveness, 'Min Cool': self.min_cooling_effectiveness,
+                            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Max Cool': self.max_cooling_effectiveness, 'Min Cool': self.min_cooling_effectiveness,
                                      'Cooling Effectiveness Active Temp History': self.active_temperature_history}
                             with open(self.aircon_config['Effectiveness Log'], 'a') as f:
-                                f.write(',\n"' + str(time_data) + '": ' + json.dumps(json_log_data))
+                                f.write(',\n' + json.dumps(json_log_data))
                     else:
                         time.sleep(0.01)# No update if not in heat mode or cool mode
         self.temperature_update_time[name] = current_temp_update_time # Record the time of the temp update. Used to ignore double temp updates from the sensors
@@ -2534,11 +2536,11 @@ class AirconClass(object):
                 today = datetime.now()
                 time_data = time.time()
                 time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
-                json_log_data = {'Time': time_stamp, 'Total Hours': round(self.aircon_running_costs['total_hours'], 1), 'Total Cost': round(self.aircon_running_costs['total_cost'], 2),
+                json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Total Hours': round(self.aircon_running_costs['total_hours'], 1), 'Total Cost': round(self.aircon_running_costs['total_cost'], 2),
                                  'Current Mode': mode, 'Previous Mode': self.settings['aircon_previous_mode'], 'Previous Mode Minutes': round(aircon_previous_mode_time_in_hours*60, 1),
                                  'Previous Cost': round(aircon_previous_cost, 2)}
                 with open(self.aircon_config['Cost Log'], 'a') as f:
-                    f.write(',\n"' + str(time_data) + '": ' + json.dumps(json_log_data))  
+                    f.write(',\n' + json.dumps(json_log_data))  
         #print('aircon_previous_power_rate =', self.settings['aircon_previous_power_rate'], 'aircon_previous_mode =', self.settings['aircon_previous_mode'])
         self.settings['aircon_previous_power_rate'] = current_power_rate
         self.settings['aircon_previous_update_time'] = update_time
@@ -2552,9 +2554,9 @@ class AirconClass(object):
             today = datetime.now()
             time_data = time.time()
             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
-            json_log_data = {'Time': time_stamp, 'Damper Percent': damper_percent}
+            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Damper Percent': damper_percent}
             with open(self.aircon_config['Damper Log'], 'a') as f:
-                f.write(',\n"' + str(time_data) + '": ' + json.dumps(json_log_data))
+                f.write(',\n' + json.dumps(json_log_data))
         aircon_json = {}
         aircon_json['service'] = 'Damper Percent'
         aircon_json['value'] = damper_percent
@@ -2627,54 +2629,49 @@ class AirconClass(object):
         name = self.aircon_config['Effectiveness Log']
         f = open(name, 'r')
         logged_data = f.read()
-        logged_data = logged_data + '}}'
+        logged_data = logged_data + ']'
         if "Time" in logged_data: # Only parse the data if something has been logged
             parsed_data = json.loads(logged_data)
-            latest_heat_time = '0'
-            latest_cool_time = '0'  
-            for time in parsed_data["Effectiveness Log"]:
-                if "Max Heat" in parsed_data["Effectiveness Log"][time]:
-                    if float(time) > float(latest_heat_time):
-                        latest_heat_time = time
-                if "Max Cool" in parsed_data["Effectiveness Log"][time]:
-                    if float(time) > float(latest_cool_time):
-                        latest_cool_time = time
-            if latest_heat_time != '0':
+            latest_heat_entry = 0
+            latest_cool_entry = 0  
+            for entry in range(len(parsed_data)):
+                if "Max Heat" in parsed_data[entry]:
+                    if entry > latest_heat_entry:
+                        latest_heat_entry = entry
+                if "Max Cool" in parsed_data[entry]:
+                    if entry > latest_cool_entry:
+                        latest_cool_entry = entry
+            if latest_heat_entry != 0:
                 for key in self.max_heating_effectiveness:
-                    print(key, 'Max Heat', parsed_data["Effectiveness Log"][latest_heat_time]["Max Heat"][key])
-                    print(key, 'Min Heat', parsed_data["Effectiveness Log"][latest_heat_time]["Min Heat"][key])
-                    self.max_heating_effectiveness[key] = parsed_data["Effectiveness Log"][latest_heat_time]["Max Heat"][key]
-                    self.min_heating_effectiveness[key] = parsed_data["Effectiveness Log"][latest_heat_time]["Min Heat"][key]
-            if latest_cool_time != '0':
+                    #print(key, 'Max Heat', parsed_data[latest_heat_entry]["Max Heat"][key])
+                    #print(key, 'Min Heat', parsed_data[latest_heat_entry]["Min Heat"][key])
+                    self.max_heating_effectiveness[key] = parsed_data[latest_heat_entry]["Max Heat"][key]
+                    self.min_heating_effectiveness[key] = parsed_data[latest_heat_entry]["Min Heat"][key]
+            if latest_cool_entry != 0:
                 for key in self.max_cooling_effectiveness:
-                    print(key, 'Max Cool', parsed_data["Effectiveness Log"][latest_cool_time]["Max Cool"][key])
-                    print(key, 'Min Cool', parsed_data["Effectiveness Log"][latest_cool_time]["Min Cool"][key])
-                    self.max_cooling_effectiveness[key] = parsed_data["Effectiveness Log"][latest_cool_time]["Max Cool"][key]
-                    self.min_cooling_effectiveness[key] = parsed_data["Effectiveness Log"][latest_cool_time]["Min Cool"][key]
+                    #print(key, 'Max Cool', parsed_data[latest_cool_entry]["Max Cool"][key])
+                    #print(key, 'Min Cool', parsed_data[latest_cool_entry]["Min Cool"][key])
+                    self.max_cooling_effectiveness[key] = parsed_data[latest_cool_entry]["Max Cool"][key]
+                    self.min_cooling_effectiveness[key] = parsed_data[latest_cool_entry]["Min Cool"][key]
 
     def populate_aircon_power_status(self):
         # Read log file
         name = self.aircon_config['Cost Log']
         f = open(name, 'r')
         data_log = f.read()
-        data_log = data_log + '}}'
+        data_log = data_log + ']'
         if "Total Cost" in data_log: # Only retrieve data is something has been logged
             parsed_data = json.loads(data_log)
-            last_log_time = 0     
-            for time in parsed_data["Aircon Cost Log"]:
-                if float(time) > last_log_time:
-                    last_log_time = float(time)
-            last_logged_data = parsed_data["Aircon Cost Log"][str(last_log_time)]
-            hours = last_logged_data["Total Hours"]
+            last_log_entry = parsed_data[-1]
+            hours = last_log_entry["Total Hours"]
             print('Logged ' + self.name + ' Total Hours are', hours)
             self.aircon_running_costs['total_hours'] = hours     
-            cost = last_logged_data["Total Cost"]
+            cost = last_log_entry["Total Cost"]
             print('Logged ' + self.name + ' Total Cost is $' + str(cost))
             self.aircon_running_costs['total_cost'] = cost
             print('Logged ' + self.name + ' Running Cost per Hour is $', str(round(cost/hours, 2)))
         else:
-            print('No ' + self.name + ' JSON Cost Data Logged')
-            pass 
+            print('No ' + self.name + ' Cost Data Logged')
 
 class Foobot:
     def __init__(self, apikey, username, password):
