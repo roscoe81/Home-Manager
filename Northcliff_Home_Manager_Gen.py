@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.46 Gen
+#Northcliff Home Manager - 7.47 Gen
 # Requires minimum Doorbell V2.0 and Aircon V3.44
 
 import paho.mqtt.client as mqtt
@@ -314,7 +314,7 @@ class HomebridgeClass(object):
         self.aircon_thermostat_mode_map = {0: 'Off', 1: 'Heat', 2: 'Cool'}
         self.aircon_thermostat_incoming_mode_map = {'Off': 0, 'Heat': 1, 'Cool': 2}
         # Set up aircon homebridge button types (Indicator, Position Indicator or Thermostat Control)
-        self.aircon_button_type = {'Remote Operation': 'Indicator', 'Heat': 'Indicator', 'Cool': 'Indicator', 'Fan': 'Indicator', 'Fan Hi': 'Indicator', 'Fan Lo': 'Indicator', 'Heating': 'Indicator', 'Compressor': 'Indicator', 'Terminated': 'Indicator', 'Damper': 'Position Indicator', 'Clean Filter': 'Indicator', 'Malfunction': 'Indicator', 'Ventilation': 'Switch'}
+        self.aircon_button_type = {'Remote Operation': 'Indicator', 'Heat': 'Indicator', 'Cool': 'Indicator', 'Fan': 'Indicator', 'Fan Hi': 'Indicator', 'Fan Lo': 'Indicator', 'Heating': 'Indicator', 'Compressor': 'Indicator', 'Terminated': 'Indicator', 'Damper': 'Position Indicator', 'Filter': 'Indicator', 'Malfunction': 'Indicator', 'Ventilation': 'Switch'}
         self.aircon_thermostat_format = {}
         self.aircon_ventilation_button_format = {}
         self.aircon_control_thermostat_name = {}
