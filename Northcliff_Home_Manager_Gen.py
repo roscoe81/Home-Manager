@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.49 Gen
+#Northcliff Home Manager - 7.54 Gen
 # Requires minimum Doorbell V2.0 and Aircon V3.44
 
 import paho.mqtt.client as mqtt
@@ -13,11 +13,14 @@ import requests
 import os
 
 class NorthcliffHomeManagerClass(object):
-    def __init__(self, log_aircon_cost_data, log_aircon_damper_data, log_aircon_temp_data):
+    def __init__(self, log_aircon_cost_data, log_aircon_damper_data, log_aircon_temp_data, load_previous_aircon_effectiveness):
         #print ('Instantiated Home Manager')
         self.log_aircon_cost_data = log_aircon_cost_data # Flags if the aircon cost data is to be logged
         self.log_aircon_damper_data = log_aircon_damper_data # Flags if the aircon damper data is to be logged
         self.log_aircon_temp_data = log_aircon_temp_data # Flags if the aircon temperature data is to be logged
+        self.load_previous_aircon_effectiveness = load_previous_aircon_effectiveness # Flags if the aircon data is to be loaded on startup
+        self.home_manager_file_name = '<Your Home Manager File Path and Name>'
+        self.key_state_log_file_name = '<Your Key State Log File Path and Name>'
         # Set up property data
         # List the rooms under management
         self.property_rooms = ['Lounge', 'Living', 'TV', 'Dining', 'Study', 'Kitchen', 'Hallway', 'North', 'South', 'Main', 'Rear Balcony', 'North Balcony', 'South Balcony']
@@ -37,8 +40,8 @@ class NorthcliffHomeManagerClass(object):
         self.light_dimmer_names_device_id = {'Lounge': 323, 'TV': 325, 'Dining': 324, 'Study': 648, 'Kitchen': 504, 'Hallway': 328, 'North': 463,
                                               'South': 475, 'Main': 451, 'North Balcony': 517, 'South Balcony': 518, 'Window': 721}
         # Set up the config for each aircon, including their mqtt topics
-        self.aircon_config = {'Aircon': {'mqtt Topics': {'Outgoing':'AirconControl', 'Incoming': 'AirconStatus'}, 'Day Zone': ['Living', 'Study', 'Kitchen'], 'Night Zone': ['North', 'South', 'Main'],
-                                         'Indoor Zone': ['Indoor'], 'Cost Log': '<Your Cost Log File Path and Name>',
+        self.aircon_config = {'Aircon': {'mqtt Topics': {'Outgoing':'AirconControl', 'Incoming': 'AirconStatus'}, 'Day Zone': ['Living', 'Study', 'Kitchen'],
+                                         'Night Zone': ['North', 'South', 'Main'], 'Indoor Zone': ['Indoor'], 'Outdoor Temp Sensor': 'North Balcony', 'Cost Log': '<Your Cost Log File Path and Name>',
                                          'Effectiveness Log': '<Your Effectiveness Log File Path and Name>', 'Spot Temperature History Log': '<Your Spot Temperature History Log File Path and Name>',
                                          'Damper Log': '<Your Damper Log File Path and Name>'}}
         # List the temperature sensors that control the aircons
@@ -155,15 +158,15 @@ class NorthcliffHomeManagerClass(object):
                            **{'Aircon Thermo Mode': {aircon_name: aircon[aircon_name].settings['indoor_thermo_mode'] for aircon_name in self.aircon_config}}, 
                            **{'Aircon Thermo Active': {aircon_name: aircon[aircon_name].settings['indoor_zone_sensor_active'] for aircon_name in self.aircon_config}},
                            **{'Air Purifier Max Co2': {air_purifier_name: air_purifier[air_purifier_name].max_co2 for air_purifier_name in self.auto_air_purifier_names}}}
-        with open('/home/pi/HomeManager/key_state.log', 'w') as f:
+        with open(self.key_state_log_file_name, 'w') as f:
             f.write(json.dumps(key_state_log))   
 
     def retrieve_key_states(self):
-        name = '/home/pi/HomeManager/key_state.log'
+        name = self.key_state_log_file_name
         f = open(name, 'r')
         parsed_key_states = json.loads(f.read())
-        #print('Retrieved Key States', parsed_key_states)
-        #print ('Previous logging reason was', parsed_key_states['Reason'])
+        print('Retrieved Key States', parsed_key_states)
+        print ('Previous logging reason was', parsed_key_states['Reason'])
         for name in parsed_key_states['Door State']:
             door_sensor[name].current_door_opened = parsed_key_states['Door State'][name]
             door_sensor[name].previous_door_opened = parsed_key_states['Door State'][name]
@@ -218,7 +221,7 @@ class NorthcliffHomeManagerClass(object):
                 homebridge.set_air_purifier_state(name, mode, fan_speed, child_lock, led_brightness, filter_status)    
             # Start up Aircons
             for aircon_name in mgr.aircon_config:
-                aircon[aircon_name].start_up()
+                aircon[aircon_name].start_up(self.load_previous_aircon_effectiveness)
             doorbell.update_doorbell_status() # Get doorbell status on startup
             # Initialise multisensor readings on homebridge to start-up settings
             for name in self.multisensor_names:    
@@ -316,7 +319,7 @@ class HomebridgeClass(object):
         # Set up aircon homebridge button types (Indicator, Position Indicator or Thermostat Control)
         self.aircon_button_type = {'Remote Operation': 'Indicator', 'Heat': 'Indicator', 'Cool': 'Indicator', 'Fan': 'Indicator', 'Fan Hi': 'Indicator',
                                    'Fan Lo': 'Indicator', 'Heating': 'Indicator', 'Compressor': 'Indicator', 'Terminated': 'Indicator', 'Damper': 'Position Indicator',
-                                   'Filter': 'Indicator', 'Malfunction': 'Indicator', 'Ventilation': 'Switch'}
+                                   'Filter': 'Indicator', 'Malfunction': 'Indicator', 'Ventilation': 'Switch', 'Reset Effectiveness Log': 'Switch'}
         self.aircon_thermostat_format = {}
         self.aircon_ventilation_button_format = {}
         self.aircon_control_thermostat_name = {}
@@ -514,6 +517,13 @@ class HomebridgeClass(object):
                 ventilation = parsed_json['value']
                 #print('Ventilation Button Pressed')
                 aircon[aircon_name].process_ventilation_button(ventilation)
+            if parsed_json['service_name'] == 'Reset Effectiveness Log':
+                print('Reset Effectiveness Log Pressed')
+                aircon[aircon_name].reset_effectiveness_log()
+                time.sleep(0.5)
+                homebridge_json = parsed_json
+                homebridge_json['value'] = False
+                client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
             else:
                 print('Unknown Aircon Button Pressed', str(parsed_json))
         else:
@@ -606,7 +616,7 @@ class HomebridgeClass(object):
                 time.sleep(1)
                 mgr.shutdown('Restart Button')
                 time.sleep(1)
-                os.execv('/home/pi/HomeManager/Northcliff_Home_Manager.py', [''])
+                os.execv(mgr.home_manager_file_name, [''])
             else:
                 mgr.print_update('Restart Trigger Command without arming received on ')
                 time.sleep(1)
@@ -2029,6 +2039,7 @@ class AirconClass(object):
         self.control_thermostat = self.aircon_config['Indoor Zone'][0]
         self.thermostat_names = self.indoor_zone + self.aircon_config['Indoor Zone']
         self.active_temperature_change_rate = {name: 0 for name in self.thermostat_names}
+        self.outdoor_temp_sensor = self.aircon_config['Outdoor Temp Sensor']
         # Set up Aircon status data
         self.status = {'Remote Operation': False,'Heat': False, 'Cool': False,'Fan': False, 'Fan Hi': False, 'Fan Lo': False,
                         'Heating': False, 'Filter':False, 'Compressor': False, 'Malfunction': False, 'Damper': 50}
@@ -2064,14 +2075,15 @@ class AirconClass(object):
         self.aircon_running_costs = {'total_cost':0, 'total_hours': 0}
         self.log_aircon_cost_data = log_aircon_cost_data
 
-    def start_up(self):
+    def start_up(self, load_previous_aircon_effectiveness):
         # Reset Homebridge Thermostats/Ventilation Buttons and set zone temps on start-up
         homebridge.reset_aircon_thermostats(self.name, self.thermostat_status)
         self.update_zone_temps()
         # Reset Domoticz Thermostats on start-up
         domoticz.reset_aircon_thermostats(self.name, self.thermostat_status)
-        # Initialise aircon effectiveness dictionary based on previously logged data
-        self.populate_starting_aircon_effectiveness()
+        if load_previous_aircon_effectiveness == True:
+            # Initialise aircon effectiveness dictionary based on previously logged data
+            self.populate_starting_aircon_effectiveness()
         # Initialise aircon power dictionary based on previously logged data
         self.populate_aircon_power_status()
         self.send_aircon_command('Update Status') # Get aircon status on startup
@@ -2084,6 +2096,22 @@ class AirconClass(object):
         homebridge.reset_aircon_thermostats(self.name, self.thermostat_status)
         # Reset Domoticz Thermostats on shut-down
         domoticz.reset_aircon_thermostats(self.name, self.thermostat_status)
+
+    def reset_effectiveness_log(self):
+        self.active_temperature_history = {name: [0.0 for x in range (10)] for name in self.indoor_zone}
+        self.max_heating_effectiveness = {name: 0.0 for name in self.aircon_log_items}
+        self.min_heating_effectiveness = {name: 9.9 for name in self.aircon_log_items}
+        self.max_cooling_effectiveness = {name: 0.0 for name in self.aircon_log_items}
+        self.min_cooling_effectiveness = {name: 9.9 for name in self.aircon_log_items}
+                today = datetime.now()
+        time_data = self.get_local_time()
+        time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
+        json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Message': 'Log Reset', 'Mode': 'Cool', 'Max': self.max_cooling_effectiveness, 'Min': self.min_cooling_effectiveness}
+        with open(self.aircon_config['Effectiveness Log'], 'a') as f:
+            f.write(',\n' + json.dumps(json_log_data))
+        json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Message': 'Log Reset', 'Mode': 'Heat', 'Max': self.max_heating_effectiveness, 'Min': self.min_heating_effectiveness}
+        with open(self.aircon_config['Effectiveness Log'], 'a') as f:
+            f.write(',\n' + json.dumps(json_log_data))
 
     def process_ventilation_button(self, ventilation):
         #print('Process Aircon Ventilation Button. Ventilation:', ventilation, 'Thermo Off:', self.settings['Thermo Off'])
@@ -2229,12 +2257,13 @@ class AirconClass(object):
                     self.active_temperature_change_rate['Indoor'] = self.mean_active_temp_change_rate(self.indoor_zone) # Calculate Indoor zone temperature change rate by taking the mean temp change rates of active indoor sensors
                     #print("Day Zone Active Change Rate:", self.active_temperature_change_rate['Day'], "Night Zone Active Change Rate:", self.active_temperature_change_rate['Night'], "Indoor Zone Active Change Rate:", self.active_temperature_change_rate['Indoor'])
                     today = datetime.now()
-                    time_data = time.time()
+                    time_data = self.get_local_time()
                     time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
-                    json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Sensor': name, 'Active Temp History': self.active_temperature_history[name],
-                                 'Active Temp Change Rate': self.active_temperature_change_rate[name], 'Active Day Change Rate': self.active_temperature_change_rate['Day'],
+                    json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Sensor': name, 'Latest Temp': self.active_temperature_history[name][0],
+                                      'Ten Minute Historical Temp': self.active_temperature_history[name][9],
+                                      'Active Temp Change Rate': self.active_temperature_change_rate[name], 'Active Day Change Rate': self.active_temperature_change_rate['Day'],
                                      'Active Night Change Rate': self.active_temperature_change_rate['Night'], 'Active Indoor Change Rate': self.active_temperature_change_rate['Indoor'],
-                                     'Damper Position': self.status['Damper']}
+                                     'Damper Position': self.status['Damper'], 'Outdoor Temp': multisensor[self.outdoor_temp_sensor].sensor_types_with_value['Temperature']}
                     with open(self.aircon_config['Spot Temperature History Log'], 'a') as f:
                         f.write(',\n' + json.dumps(json_log_data))
                     if self.status['Heat'] == True:
@@ -2261,10 +2290,11 @@ class AirconClass(object):
                         #print("Aircon Minimum Heating Effectiveness:", min_heating_effectiveness)
                         if log == True:
                             today = datetime.now()
-                            time_data = time.time()
+                            time_data = self.get_local_time()
                             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
-                            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Max Heat': self.max_heating_effectiveness, 'Min Heat': self.min_heating_effectiveness,
-                                     'Heating Effectiveness Active Temp History': self.active_temperature_history}
+                            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Sensor': name, 'Mode': 'Heat', 'Max': self.max_heating_effectiveness, 'Min': self.min_heating_effectiveness,
+                                              'Latest Temp': self.active_temperature_history[name][0], 'Ten Minute Historical Temp': self.active_temperature_history[name][9],
+                                              'Outdoor Temp': multisensor[self.outdoor_temp_sensor].sensor_types_with_value['Temperature']}
                             with open(self.aircon_config['Effectiveness Log'], 'a') as f:
                                 f.write(',\n' + json.dumps(json_log_data))
                     elif self.status['Cool'] == True:
@@ -2291,10 +2321,11 @@ class AirconClass(object):
                         #print("Aircon Minimum Cooling Effectiveness:", min_cooling_effectiveness)
                         if log == True:
                             today = datetime.now()
-                            time_data = time.time()
+                            time_data = self.get_local_time()
                             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')       
-                            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Max Cool': self.max_cooling_effectiveness, 'Min Cool': self.min_cooling_effectiveness,
-                                     'Cooling Effectiveness Active Temp History': self.active_temperature_history}
+                            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Sensor': name, 'Mode': 'Cool', 'Max': self.max_cooling_effectiveness, 'Min': self.min_cooling_effectiveness,
+                                              'Latest Temp': self.active_temperature_history[name][0], 'Ten Minute Historical Temp': self.active_temperature_history[name][9],
+                                              'Outdoor Temp': multisensor[self.outdoor_temp_sensor].sensor_types_with_value['Temperature']}
                             with open(self.aircon_config['Effectiveness Log'], 'a') as f:
                                 f.write(',\n' + json.dumps(json_log_data))
                     else:
@@ -2328,6 +2359,8 @@ class AirconClass(object):
         self.settings['indoor_zone_sensor_active'], self.settings['indoor_zone_target_temperature'], self.settings['indoor_zone_current_temperature'] = self.mean_active_temperature(self.indoor_zone)
         if self.settings['indoor_zone_sensor_active'] != 0: # Only update the Indoor Climate Control Temperatures if at least one sensor is active
             homebridge.update_control_thermostat_temps(self.name, self.settings['indoor_zone_target_temperature'], self.settings['indoor_zone_current_temperature'])
+            self.thermostat_status[self.control_thermostat]['Current Temperature'] = round(self.settings['indoor_zone_current_temperature'], 1)
+            self.thermostat_status[self.control_thermostat]['Target Temperature'] = round(self.settings['indoor_zone_target_temperature'], 1)
     
     def mean_active_temperature(self, zone): # Called by update_zone_temps to calculate the mean target and current zone temperatures of a zone using the data from active sensors
         den_sum = 0
@@ -2349,6 +2382,14 @@ class AirconClass(object):
             target_temperature = 1
             current_temperature = 1
         return sensor_active, target_temperature, current_temperature
+
+    def get_local_time(self):
+        non_dst = time.time() - time.timezone
+        dst = non_dst - time.altzone
+        if time.daylight < 0:
+            return dst
+        else:
+            return non_dst
 
     def control_aircon(self):
         if self.status['Remote Operation'] == True: # Only invoke aircon control is the aircon is under control of the Raspberry Pi
@@ -2534,7 +2575,7 @@ class AirconClass(object):
                   + ' hours with an average operating cost of $' + str(round(self.total_aircon_average_cost_per_hour, 2)) + ' per hour')
             if log_aircon_cost_data == True:
                 today = datetime.now()
-                time_data = time.time()
+                time_data = self.get_local_time()
                 time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
                 json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Total Hours': round(self.aircon_running_costs['total_hours'], 1), 'Total Cost': round(self.aircon_running_costs['total_cost'], 2),
                                  'Current Mode': mode, 'Previous Mode': self.settings['aircon_previous_mode'], 'Previous Mode Minutes': round(aircon_previous_mode_time_in_hours*60, 1),
@@ -2552,9 +2593,13 @@ class AirconClass(object):
         #print_update("Move Damper to " + str(damper_percent) + " percent at ")
         if log_damper_data == True:
             today = datetime.now()
-            time_data = time.time()
+            time_data = self.get_local_time()
             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
-            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Damper Percent': damper_percent}
+            current_temps = {thermostat: self.thermostat_status[thermostat]['Current Temperature'] for thermostat in self.thermostat_status}
+            target_temps = {thermostat: self.thermostat_status[thermostat]['Target Temperature'] for thermostat in self.thermostat_status}
+            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Damper Percent': damper_percent, 'Thermostat Current Temps': current_temps, 'Thermostat Target Temps': target_temps,
+                             'Day Zone Current Temp': round(self.settings['day_zone_current_temperature'], 1), 'Night Zone Current Temp': round(self.settings['night_zone_current_temperature'], 1),
+                              'Day Zone Target Temp': round(self.settings['day_zone_target_temperature'], 1), 'Night Zone Target Temp': round(self.settings['night_zone_target_temperature'], 1)}
             with open(self.aircon_config['Damper Log'], 'a') as f:
                 f.write(',\n' + json.dumps(json_log_data))
         aircon_json = {}
@@ -2626,33 +2671,34 @@ class AirconClass(object):
 
     def populate_starting_aircon_effectiveness(self):
         # Read log file
+        print('Retrieving', self.name, 'Effectiveness Log File')
         name = self.aircon_config['Effectiveness Log']
         f = open(name, 'r')
         logged_data = f.read()
         logged_data = logged_data + ']'
-        if "Time" in logged_data: # Only parse the data if something has been logged
+        if "Mode" in logged_data: # Only parse the data if something has been logged
             parsed_data = json.loads(logged_data)
             latest_heat_entry = 0
             latest_cool_entry = 0  
             for entry in range(len(parsed_data)):
-                if "Max Heat" in parsed_data[entry]:
+                if parsed_data[entry]['Mode'] == 'Heat':
                     if entry > latest_heat_entry:
                         latest_heat_entry = entry
-                if "Max Cool" in parsed_data[entry]:
+                if parsed_data[entry]['Mode'] == 'Cool':
                     if entry > latest_cool_entry:
                         latest_cool_entry = entry
             if latest_heat_entry != 0:
                 for key in self.max_heating_effectiveness:
-                    #print(key, 'Max Heat', parsed_data[latest_heat_entry]["Max Heat"][key])
-                    #print(key, 'Min Heat', parsed_data[latest_heat_entry]["Min Heat"][key])
-                    self.max_heating_effectiveness[key] = parsed_data[latest_heat_entry]["Max Heat"][key]
-                    self.min_heating_effectiveness[key] = parsed_data[latest_heat_entry]["Min Heat"][key]
+                    #print(key, 'Max Heat', parsed_data[latest_heat_entry]["Max"][key])
+                    #print(key, 'Min Heat', parsed_data[latest_heat_entry]["Min"][key])
+                    self.max_heating_effectiveness[key] = parsed_data[latest_heat_entry]['Max'][key]
+                    self.min_heating_effectiveness[key] = parsed_data[latest_heat_entry]['Min'][key]
             if latest_cool_entry != 0:
                 for key in self.max_cooling_effectiveness:
-                    #print(key, 'Max Cool', parsed_data[latest_cool_entry]["Max Cool"][key])
-                    #print(key, 'Min Cool', parsed_data[latest_cool_entry]["Min Cool"][key])
-                    self.max_cooling_effectiveness[key] = parsed_data[latest_cool_entry]["Max Cool"][key]
-                    self.min_cooling_effectiveness[key] = parsed_data[latest_cool_entry]["Min Cool"][key]
+                    #print(key, 'Max Cool', parsed_data[latest_cool_entry]["Max"][key])
+                    #print(key, 'Min Cool', parsed_data[latest_cool_entry]["Min"][key])
+                    self.max_cooling_effectiveness[key] = parsed_data[latest_cool_entry]['Max'][key]
+                    self.min_cooling_effectiveness[key] = parsed_data[latest_cool_entry]['Min'][key]
 
     def populate_aircon_power_status(self):
         # Read log file
@@ -2908,7 +2954,7 @@ class BlueAirClass(object):
             
 if __name__ == '__main__': # This is where to overall code kicks off
     # Create a Home Manager instance
-    mgr = NorthcliffHomeManagerClass(log_aircon_cost_data = True, log_aircon_damper_data = True, log_aircon_temp_data = True)
+    mgr = NorthcliffHomeManagerClass(log_aircon_cost_data = True, log_aircon_damper_data = True, log_aircon_temp_data = True, load_previous_aircon_effectiveness = True)
     # Create a Homebridge instance
     homebridge = HomebridgeClass(mgr.homebridge_outgoing_mqtt_topic, mgr.outdoor_zone, mgr.outdoor_sensors_homebridge_name, mgr.aircon_config, mgr.auto_air_purifier_names)
     # Create a Domoticz instance
