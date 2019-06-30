@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.55 Gen
+#Northcliff Home Manager - 7.58 Gen
 # Requires minimum Doorbell V2.0 and Aircon V3.44
 
 import paho.mqtt.client as mqtt
@@ -518,7 +518,7 @@ class HomebridgeClass(object):
                 #print('Ventilation Button Pressed')
                 aircon[aircon_name].process_ventilation_button(ventilation)
             if parsed_json['service_name'] == 'Reset Effectiveness Log':
-                print('Reset Effectiveness Log Pressed')
+                print('Reset', aircon_name, 'Effectiveness Log Pressed')
                 aircon[aircon_name].reset_effectiveness_log()
                 time.sleep(0.5)
                 homebridge_json = parsed_json
@@ -2478,9 +2478,9 @@ class AirconClass(object):
                         current_power_rate = self.check_power_rate(update_date_time)
                         self.update_aircon_power_log(mode, current_power_rate, time.time(), self.log_aircon_cost_data)
                 else: # If the aircon is in Ventilation Mode
-                    if self.settings['target_day_zone'] != 60: # If the damper is not set to both zones
+                    if self.settings['target_day_zone'] != 50: # If the damper is not set to both zones
                         previous_target_day_zone = self.settings['target_day_zone'] # Record the current damper position to determine if a change needs to invoked
-                        self.settings['target_day_zone'] = 60 # Set the damper to both zones
+                        self.settings['target_day_zone'] = 50 # Set the damper to both zones
                         self.move_damper(self.settings['target_day_zone'], 'Idle', self.log_damper_data)
                     mode, self.settings = self.check_power_change(self.status, self.settings, self.log_aircon_cost_data)         
 
@@ -2613,9 +2613,10 @@ class AirconClass(object):
         homebridge.set_target_damper_position(self.name, damper_percent)
 
     def set_dual_zone_damper(self, day_zone_gap, night_zone_gap, day_zone_gap_max, night_zone_gap_max, mode): # Called by control_aircon in dual zone mode to set the damper to an optimal position, based on relative temperature gaps
+        # The first three checks are to avoid cases where the dual damper algorithm has its denominator = 0
         if day_zone_gap == 0 and night_zone_gap == 0: # If both zones are equal to their target temperatures
             #print('Damper: Balance Zones')
-            optimal_day_zone = 60 # Balance zones
+            optimal_day_zone = 50 # Balance zones
         elif day_zone_gap > 0 and night_zone_gap < 0: # If the Night Zone is the only zone that's passed its target temperature
             #print('Damper: Night Zone Passed Target Temperature. Set to Day Zone')
             optimal_day_zone = 100 # Move to Day Zone
@@ -2625,24 +2626,29 @@ class AirconClass(object):
         else: # If both zones have passed their target temperatures or neither zone has passed its target temperature or only one zone is equal to its target temperature
             day_proportion = day_zone_gap / (day_zone_gap + night_zone_gap)
             night_proportion = night_zone_gap / (day_zone_gap + night_zone_gap)
-            if day_zone_gap >= 0 and night_zone_gap >= 0: # If neither zone has passed its target temperature or one has met and the other has not passed its target temperature
-                #print('Damper Algorithm: Neither Zone Passed Target Temperature')
-                optimal_day_zone_not_passed = 60 * day_proportion / (0.6 * day_proportion + 0.4 * night_proportion) # Damper is biased towards Day Zone
-                optimal_day_zone = optimal_day_zone_not_passed # Damper is biased towards Day Zone
-            elif day_zone_gap <= 0 and night_zone_gap <= 0: # If both zones have passed their target temperature or one has met and the other has passed their target temperature
-                #print('Damper Algorithm: Both Zones Passed Target Temperature')
-                if day_zone_gap_max < 0 and night_zone_gap_max >= 0: # Set to night zone if only day zone has reached max gap 
+            if day_zone_gap >= 0 and night_zone_gap >= 0: # If neither zone has passed its target temperature
+                #print('Damper Algorithm: Neither Zone Passed its target Temperature')
+                optimal_day_zone_not_passed = 50 * day_proportion / (0.5 * day_proportion + 0.5 * night_proportion)
+                optimal_day_zone = optimal_day_zone_not_passed
+            else: # At least one zone has passed its target temperature
+                #print('Damper Algorithm: At least one zone has passed its Target Temperature')
+                if day_zone_gap_max == 0 and night_zone_gap_max == 0: # Balance Damper if both zones are equal to their max temps
+                    optimal_day_zone = 50
+                elif day_zone_gap_max < 0 and night_zone_gap_max >= 0: # Set to night zone if only day zone has exceeded its max temp 
                     optimal_day_zone = 0
-                elif night_zone_gap_max < 0 and day_zone_gap_max >= 0: # Set to day zone if only night zone has reached max gap 
+                elif night_zone_gap_max < 0 and day_zone_gap_max >= 0: # Set to day zone if only night zone has exceeded its max temp 
                     optimal_day_zone = 100
-                elif day_zone_gap_max < 0 and night_zone_gap_max < 0: # Balance zones if both have reached max gaps
-                    optimal_day_zone = 60
-                else: # Optimise damper if neither Zone has met max gap 
-                    optimal_day_zone_passed = 60 * night_proportion / (0.6 * night_proportion + 0.4 * day_proportion) # Damper is biased towards Day Zone but invert for negative zone temp gaps
+                elif day_zone_gap_max >= 0 and night_zone_gap_max >= 0: # Optimise damper if neither zone has exceeded its max gap
+                    optimal_day_zone_passed = 50 * night_proportion / (0.5 * night_proportion + 0.5 * day_proportion) # Invert for negative zone temp gaps
                     optimal_day_zone = optimal_day_zone_passed
-            else:
-                print('Unforseen Damper setting. Day Zone Gap', day_zone_gap, 'Night Zone Gap', night_zone_gap)
-                optimal_day_zone = 60 # Balance zones
+                elif day_zone_gap_max < 0 and night_zone_gap_max < 0: # Optimise damper against max gaps if both zones have reached their max gaps
+                    day_proportion = day_zone_gap_max / (day_zone_gap_max + night_zone_gap_max) # Apply Algorithm to max gaps
+                    night_proportion = night_zone_gap_max / (day_zone_gap_max + night_zone_gap_max)# Apply Algorithm to max gaps
+                    optimal_day_zone_passed = 50 * night_proportion / (0.5 * night_proportion + 0.5 * day_proportion) # Invert for negative zone temp gaps
+                    optimal_day_zone = optimal_day_zone_passed
+                else:
+                    print('Unforseen Max Temp Gap Damper setting. Day Zone Gap', day_zone_gap, 'Night Zone Gap', night_zone_gap)
+                    optimal_day_zone = 50 # Balance zones
         if optimal_day_zone >= 95:
             set_day_zone = 100
         elif optimal_day_zone >= 85 and optimal_day_zone < 95:
