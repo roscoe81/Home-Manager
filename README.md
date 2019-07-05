@@ -12,14 +12,25 @@ The [System Overview](https://github.com/roscoe81/Home-Manager/blob/master/Docum
 The [Functional Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20OOP%20Functional%20Overview.pdf) outlines the Python objects of the Home Manager controller and how they interact with Domoticz, Homebridge and the three other controllers that comprise the overall system.
 
 ## Aircon Controller
-This is a [controller](https://github.com/roscoe81/Aircon-Controller) for a Mitsubishi air conditioner (Model FDC508HES3) to provide mqtt control of the airconditioner using the serial communications link that runs between Mitsubishi's RCD-H-E remote control unit and the CNB port on the air conditioner's control board. Also provides the ability to control a damper so that airflow can be directed to the correct air conditioning zone. An inclinometer is provided for the damper in order to detect its position and control the air flow between zones with greater precision. This Home Manager code captures the actual temperatures of each room, compares those temperatures to desired temperature levels and controls the air conditioner and damper to align the desired and actual temperatures. Room temperatures can be set and monitored by the Apple Home App on an iOS device or via Domoticz. Logs are captured allow the aircon's performance to be monitored, analysed and adjusted. An example of such analysis is shown below, where the damper position is shown against the target/current temperature gaps for each aircon zone.
+This is a [controller](https://github.com/roscoe81/Aircon-Controller) for a Mitsubishi air conditioner (Model FDC508HES3) to provide mqtt control of the airconditioner using the serial communications link that runs between Mitsubishi's RCD-H-E remote control unit and the CNB port on the air conditioner's control board. Also provides the ability to control a damper so that airflow can be directed to the correct air conditioning zone. An inclinometer is provided for the damper in order to detect its position and control the air flow between zones with greater precision. This Home Manager code captures the actual temperatures of each room, compares those temperatures to desired temperature levels and controls the air conditioner and damper to align the desired and actual temperatures. Room temperatures can be set and monitored by the Apple Home App on an iOS device or via Domoticz. Logs are captured allow the aircon's performance to be monitored, analysed and adjusted. Examples of such analysis is shown below.
 
-### Aircon Controller Damper Analytics Example
+### Aircon Damper Movement Log Chart Example
+![Aircon Damper Movement Log Chart](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Damper_Movement.png)
+
+### Aircon Damper Analytics Example
 ![Aircon Damper Analytics Screenshot](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Damper_Analytics.png)
+
+### Aircon Cost Log Chart Example
+![Aircon Cost Log Chart](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Cost.png)
+
+### Aircon Zone Temp Changes Log Chart Example
+![Aircon Zone Temp Changes Log Chart](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Zone_Temp_Changes.png)
+
+### Aircon Heating Effectiveness Log Chart Example
+![Aircon Heating Effectiveness Log Char](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Heating_Effectiveness.png)
 
 ### Aircon Controller Apple Home App Screenshot
 ![Aircon Home Screenshot](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/76F68873-22C9-4C22-BA85-81DC36B0BF0A.png)
-
 
 ## Doorbell-Monitor
 This [monitor](https://github.com/roscoe81/Doorbell-Monitor/blob/master/README.md) provides doorbell automation for a Fermax 4 + N Electronic Door Entry System 
