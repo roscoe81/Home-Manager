@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.49 Gen
-# Requires minimum Doorbell V2.0 and Aircon V3.44
+#Northcliff Home Manager - 7.64 Gen
+# Requires minimum Doorbell V2.0 and Aircon V3.47
 
 import paho.mqtt.client as mqtt
 import struct
@@ -13,11 +13,14 @@ import requests
 import os
 
 class NorthcliffHomeManagerClass(object):
-    def __init__(self, log_aircon_cost_data, log_aircon_damper_data, log_aircon_temp_data):
+    def __init__(self, log_aircon_cost_data, log_aircon_damper_data, log_aircon_temp_data, load_previous_aircon_effectiveness):
         #print ('Instantiated Home Manager')
         self.log_aircon_cost_data = log_aircon_cost_data # Flags if the aircon cost data is to be logged
         self.log_aircon_damper_data = log_aircon_damper_data # Flags if the aircon damper data is to be logged
         self.log_aircon_temp_data = log_aircon_temp_data # Flags if the aircon temperature data is to be logged
+        self.load_previous_aircon_effectiveness = load_previous_aircon_effectiveness # Flags if the aircon data is to be loaded on startup
+        self.home_manager_file_name = '<Your Home Manager File Path and Name>'
+        self.key_state_log_file_name = '<Your Key State Log File Path and Name>'
         # Set up property data
         # List the rooms under management
         self.property_rooms = ['Lounge', 'Living', 'TV', 'Dining', 'Study', 'Kitchen', 'Hallway', 'North', 'South', 'Main', 'Rear Balcony', 'North Balcony', 'South Balcony']
@@ -37,8 +40,8 @@ class NorthcliffHomeManagerClass(object):
         self.light_dimmer_names_device_id = {'Lounge': 323, 'TV': 325, 'Dining': 324, 'Study': 648, 'Kitchen': 504, 'Hallway': 328, 'North': 463,
                                               'South': 475, 'Main': 451, 'North Balcony': 517, 'South Balcony': 518, 'Window': 721}
         # Set up the config for each aircon, including their mqtt topics
-        self.aircon_config = {'Aircon': {'mqtt Topics': {'Outgoing':'AirconControl', 'Incoming': 'AirconStatus'}, 'Day Zone': ['Living', 'Study', 'Kitchen'], 'Night Zone': ['North', 'South', 'Main'],
-                                         'Indoor Zone': ['Indoor'], 'Cost Log': '<Your Cost Log File Path and Name>',
+        self.aircon_config = {'Aircon': {'mqtt Topics': {'Outgoing':'AirconControl', 'Incoming': 'AirconStatus'}, 'Day Zone': ['Living', 'Study', 'Kitchen'],
+                                         'Night Zone': ['North', 'South', 'Main'], 'Indoor Zone': ['Indoor'], 'Outdoor Temp Sensor': 'North Balcony', 'Cost Log': '<Your Cost Log File Path and Name>',
                                          'Effectiveness Log': '<Your Effectiveness Log File Path and Name>', 'Spot Temperature History Log': '<Your Spot Temperature History Log File Path and Name>',
                                          'Damper Log': '<Your Damper Log File Path and Name>'}}
         # List the temperature sensors that control the aircons
@@ -155,15 +158,15 @@ class NorthcliffHomeManagerClass(object):
                            **{'Aircon Thermo Mode': {aircon_name: aircon[aircon_name].settings['indoor_thermo_mode'] for aircon_name in self.aircon_config}}, 
                            **{'Aircon Thermo Active': {aircon_name: aircon[aircon_name].settings['indoor_zone_sensor_active'] for aircon_name in self.aircon_config}},
                            **{'Air Purifier Max Co2': {air_purifier_name: air_purifier[air_purifier_name].max_co2 for air_purifier_name in self.auto_air_purifier_names}}}
-        with open('/home/pi/HomeManager/key_state.log', 'w') as f:
+        with open(self.key_state_log_file_name, 'w') as f:
             f.write(json.dumps(key_state_log))   
 
     def retrieve_key_states(self):
-        name = '/home/pi/HomeManager/key_state.log'
+        name = self.key_state_log_file_name
         f = open(name, 'r')
         parsed_key_states = json.loads(f.read())
-        #print('Retrieved Key States', parsed_key_states)
-        #print ('Previous logging reason was', parsed_key_states['Reason'])
+        print('Retrieved Key States', parsed_key_states)
+        print ('Previous logging reason was', parsed_key_states['Reason'])
         for name in parsed_key_states['Door State']:
             door_sensor[name].current_door_opened = parsed_key_states['Door State'][name]
             door_sensor[name].previous_door_opened = parsed_key_states['Door State'][name]
@@ -218,7 +221,7 @@ class NorthcliffHomeManagerClass(object):
                 homebridge.set_air_purifier_state(name, mode, fan_speed, child_lock, led_brightness, filter_status)    
             # Start up Aircons
             for aircon_name in mgr.aircon_config:
-                aircon[aircon_name].start_up()
+                aircon[aircon_name].start_up(self.load_previous_aircon_effectiveness)
             doorbell.update_doorbell_status() # Get doorbell status on startup
             # Initialise multisensor readings on homebridge to start-up settings
             for name in self.multisensor_names:    
@@ -316,7 +319,7 @@ class HomebridgeClass(object):
         # Set up aircon homebridge button types (Indicator, Position Indicator or Thermostat Control)
         self.aircon_button_type = {'Remote Operation': 'Indicator', 'Heat': 'Indicator', 'Cool': 'Indicator', 'Fan': 'Indicator', 'Fan Hi': 'Indicator',
                                    'Fan Lo': 'Indicator', 'Heating': 'Indicator', 'Compressor': 'Indicator', 'Terminated': 'Indicator', 'Damper': 'Position Indicator',
-                                   'Filter': 'Indicator', 'Malfunction': 'Indicator', 'Ventilation': 'Switch'}
+                                   'Filter': 'Indicator', 'Malfunction': 'Indicator', 'Ventilation': 'Switch', 'Reset Effectiveness Log': 'Switch'}
         self.aircon_thermostat_format = {}
         self.aircon_ventilation_button_format = {}
         self.aircon_control_thermostat_name = {}
@@ -514,6 +517,13 @@ class HomebridgeClass(object):
                 ventilation = parsed_json['value']
                 #print('Ventilation Button Pressed')
                 aircon[aircon_name].process_ventilation_button(ventilation)
+            if parsed_json['service_name'] == 'Reset Effectiveness Log':
+                print('Reset', aircon_name, 'Effectiveness Log Pressed')
+                aircon[aircon_name].reset_effectiveness_log()
+                time.sleep(0.5)
+                homebridge_json = parsed_json
+                homebridge_json['value'] = False
+                client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
             else:
                 print('Unknown Aircon Button Pressed', str(parsed_json))
         else:
@@ -606,7 +616,7 @@ class HomebridgeClass(object):
                 time.sleep(1)
                 mgr.shutdown('Restart Button')
                 time.sleep(1)
-                os.execv('/home/pi/HomeManager/Northcliff_Home_Manager.py', [''])
+                os.execv(mgr.home_manager_file_name, [''])
             else:
                 mgr.print_update('Restart Trigger Command without arming received on ')
                 time.sleep(1)
@@ -1368,11 +1378,11 @@ class MultisensorClass(object):
             # Only update aircon thermostat current temperature readings if it's an indoor sensor
             if self.name in self.aircon_temp_sensor_names:
                 homebridge.update_thermostat_current_temperature(self.name, temperature)
-                # Update the "Day", "Night" and "Indoor" Zone current temperatures with new active temperature sensor readings
                 aircon_name = self.aircon_sensor_name_aircon_map[self.name] # Find the aircon that manages this sensor
-                aircon[aircon_name].update_zone_temps()
                 # Update the aircon's current temperature record for this sensor
                 aircon[aircon_name].thermostat_status[self.name]['Current Temperature'] = temperature
+                # Update the "Day", "Night" and "Indoor" Zone current temperatures with new active temperature sensor readings
+                aircon[aircon_name].update_zone_temps()
         humidity =  int(parsed_json['svalue2'])# Capture the sensor humidity reading
         if abs(humidity - self.sensor_types_with_value['Humidity']) >= 2: #Only update humidity record if difference is >= 2
             self.sensor_types_with_value['Humidity'] = humidity
@@ -2026,19 +2036,21 @@ class AirconClass(object):
         self.day_zone = self.aircon_config['Day Zone']
         self.night_zone = self.aircon_config['Night Zone']
         self.indoor_zone = self.day_zone + self.night_zone
+        self.damper_balanced = 50 # Allows for a bias to be set for the aircon's damper. 50 sets an equal balance between the two zones.
+        # > 50 biases the airflow towards the Day Zone and < 50 biases the airflow towards the Night Zone
         self.control_thermostat = self.aircon_config['Indoor Zone'][0]
         self.thermostat_names = self.indoor_zone + self.aircon_config['Indoor Zone']
         self.active_temperature_change_rate = {name: 0 for name in self.thermostat_names}
+        self.outdoor_temp_sensor = self.aircon_config['Outdoor Temp Sensor']
         # Set up Aircon status data
         self.status = {'Remote Operation': False,'Heat': False, 'Cool': False,'Fan': False, 'Fan Hi': False, 'Fan Lo': False,
-                        'Heating': False, 'Filter':False, 'Compressor': False, 'Malfunction': False, 'Damper': 50}
+                        'Heating': False, 'Filter':False, 'Compressor': False, 'Malfunction': False, 'Damper': self.damper_balanced }
         
         self.settings = {'Thermo Heat': False, 'Thermo Cool': False, 'Thermo Off': True, 'Ventilate' : False, 'indoor_thermo_mode': 'Cool', 'day_zone_target_temperature': 21,
                           'day_zone_current_temperature': 1, 'night_zone_target_temperature': 21, 'night_zone_current_temperature': 1,
-                         'indoor_zone_target_temperature': 21, 'indoor_zone_current_temperature': 1, 'target_day_zone': 50, 'day_zone_sensor_active': 0,
-                          'night_zone_sensor_active': 0, 'indoor_zone_sensor_active': 0, 'aircon_previous_mode': 'Off', 'aircon_mode_change': False,
-                          'aircon_rate_change': False, 'aircon_previous_power_rate': 0, 'aircon_previous_update_time': time.time(),
-                          'aircon_previous_cost_per_hour': 0}
+                         'indoor_zone_target_temperature': 21, 'indoor_zone_current_temperature': 1, 'target_day_zone': self.damper_balanced, 'day_zone_sensor_active': 0,
+                          'night_zone_sensor_active': 0, 'indoor_zone_sensor_active': 0, 'aircon_previous_mode': 'Off', 'aircon_previous_power_rate': 0,
+                          'aircon_previous_update_time': time.time(), 'aircon_previous_cost_per_hour': 0, 'previous_day_zone_gap': 0, 'previous_night_zone_gap': 0, 'previous_optimal_day_zone': self.damper_balanced}
         
         # Set up effectiveness logging data
         self.aircon_log_items = self.indoor_zone + ['Day'] + ['Night']
@@ -2064,14 +2076,15 @@ class AirconClass(object):
         self.aircon_running_costs = {'total_cost':0, 'total_hours': 0}
         self.log_aircon_cost_data = log_aircon_cost_data
 
-    def start_up(self):
+    def start_up(self, load_previous_aircon_effectiveness):
         # Reset Homebridge Thermostats/Ventilation Buttons and set zone temps on start-up
         homebridge.reset_aircon_thermostats(self.name, self.thermostat_status)
         self.update_zone_temps()
         # Reset Domoticz Thermostats on start-up
         domoticz.reset_aircon_thermostats(self.name, self.thermostat_status)
-        # Initialise aircon effectiveness dictionary based on previously logged data
-        self.populate_starting_aircon_effectiveness()
+        if load_previous_aircon_effectiveness == True:
+            # Initialise aircon effectiveness dictionary based on previously logged data
+            self.populate_starting_aircon_effectiveness()
         # Initialise aircon power dictionary based on previously logged data
         self.populate_aircon_power_status()
         self.send_aircon_command('Update Status') # Get aircon status on startup
@@ -2084,6 +2097,22 @@ class AirconClass(object):
         homebridge.reset_aircon_thermostats(self.name, self.thermostat_status)
         # Reset Domoticz Thermostats on shut-down
         domoticz.reset_aircon_thermostats(self.name, self.thermostat_status)
+
+    def reset_effectiveness_log(self):
+        self.active_temperature_history = {name: [0.0 for x in range (10)] for name in self.indoor_zone}
+        self.max_heating_effectiveness = {name: 0.0 for name in self.aircon_log_items}
+        self.min_heating_effectiveness = {name: 9.9 for name in self.aircon_log_items}
+        self.max_cooling_effectiveness = {name: 0.0 for name in self.aircon_log_items}
+        self.min_cooling_effectiveness = {name: 9.9 for name in self.aircon_log_items}
+        today = datetime.now()
+        time_data = self.get_local_time()
+        time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
+        json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Message': 'Log Reset', 'Mode': 'Cool', 'Max': self.max_cooling_effectiveness, 'Min': self.min_cooling_effectiveness}
+        with open(self.aircon_config['Effectiveness Log'], 'a') as f:
+            f.write(',\n' + json.dumps(json_log_data))
+        json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Message': 'Log Reset', 'Mode': 'Heat', 'Max': self.max_heating_effectiveness, 'Min': self.min_heating_effectiveness}
+        with open(self.aircon_config['Effectiveness Log'], 'a') as f:
+            f.write(',\n' + json.dumps(json_log_data))
 
     def process_ventilation_button(self, ventilation):
         #print('Process Aircon Ventilation Button. Ventilation:', ventilation, 'Thermo Off:', self.settings['Thermo Off'])
@@ -2172,9 +2201,9 @@ class AirconClass(object):
             #mgr.print_update('Airconditioner Status update on ')
             #print(parsed_json)
             for status_item in self.status:
-                #if self.status[status_item] != parsed_json[status_item]:
-                    #print('Aircon', status_item, 'changed from', self.status[status_item], 'to', parsed_json[status_item])
-                self.status[status_item] = parsed_json[status_item]
+                if self.status[status_item] != parsed_json[status_item]:
+                    print('Aircon', status_item, 'changed from', self.status[status_item], 'to', parsed_json[status_item])
+                    self.status[status_item] = parsed_json[status_item]
                 homebridge.update_aircon_status(self.name, status_item, self.status[status_item])
                 domoticz.update_aircon_status(self.name, status_item, self.status[status_item])
                        
@@ -2229,12 +2258,13 @@ class AirconClass(object):
                     self.active_temperature_change_rate['Indoor'] = self.mean_active_temp_change_rate(self.indoor_zone) # Calculate Indoor zone temperature change rate by taking the mean temp change rates of active indoor sensors
                     #print("Day Zone Active Change Rate:", self.active_temperature_change_rate['Day'], "Night Zone Active Change Rate:", self.active_temperature_change_rate['Night'], "Indoor Zone Active Change Rate:", self.active_temperature_change_rate['Indoor'])
                     today = datetime.now()
-                    time_data = time.time()
+                    time_data = self.get_local_time()
                     time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
-                    json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Sensor': name, 'Active Temp History': self.active_temperature_history[name],
-                                 'Active Temp Change Rate': self.active_temperature_change_rate[name], 'Active Day Change Rate': self.active_temperature_change_rate['Day'],
+                    json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Sensor': name, 'Latest Temp': self.active_temperature_history[name][0],
+                                      'Ten Minute Historical Temp': self.active_temperature_history[name][9],
+                                      'Active Temp Change Rate': self.active_temperature_change_rate[name], 'Active Day Change Rate': self.active_temperature_change_rate['Day'],
                                      'Active Night Change Rate': self.active_temperature_change_rate['Night'], 'Active Indoor Change Rate': self.active_temperature_change_rate['Indoor'],
-                                     'Damper Position': self.status['Damper']}
+                                     'Damper Position': self.status['Damper'], 'Outdoor Temp': multisensor[self.outdoor_temp_sensor].sensor_types_with_value['Temperature']}
                     with open(self.aircon_config['Spot Temperature History Log'], 'a') as f:
                         f.write(',\n' + json.dumps(json_log_data))
                     if self.status['Heat'] == True:
@@ -2261,10 +2291,11 @@ class AirconClass(object):
                         #print("Aircon Minimum Heating Effectiveness:", min_heating_effectiveness)
                         if log == True:
                             today = datetime.now()
-                            time_data = time.time()
+                            time_data = self.get_local_time()
                             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
-                            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Max Heat': self.max_heating_effectiveness, 'Min Heat': self.min_heating_effectiveness,
-                                     'Heating Effectiveness Active Temp History': self.active_temperature_history}
+                            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Sensor': name, 'Mode': 'Heat', 'Max': self.max_heating_effectiveness, 'Min': self.min_heating_effectiveness,
+                                              'Latest Temp': self.active_temperature_history[name][0], 'Ten Minute Historical Temp': self.active_temperature_history[name][9],
+                                              'Outdoor Temp': multisensor[self.outdoor_temp_sensor].sensor_types_with_value['Temperature']}
                             with open(self.aircon_config['Effectiveness Log'], 'a') as f:
                                 f.write(',\n' + json.dumps(json_log_data))
                     elif self.status['Cool'] == True:
@@ -2291,10 +2322,11 @@ class AirconClass(object):
                         #print("Aircon Minimum Cooling Effectiveness:", min_cooling_effectiveness)
                         if log == True:
                             today = datetime.now()
-                            time_data = time.time()
+                            time_data = self.get_local_time()
                             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')       
-                            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Max Cool': self.max_cooling_effectiveness, 'Min Cool': self.min_cooling_effectiveness,
-                                     'Cooling Effectiveness Active Temp History': self.active_temperature_history}
+                            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Sensor': name, 'Mode': 'Cool', 'Max': self.max_cooling_effectiveness, 'Min': self.min_cooling_effectiveness,
+                                              'Latest Temp': self.active_temperature_history[name][0], 'Ten Minute Historical Temp': self.active_temperature_history[name][9],
+                                              'Outdoor Temp': multisensor[self.outdoor_temp_sensor].sensor_types_with_value['Temperature']}
                             with open(self.aircon_config['Effectiveness Log'], 'a') as f:
                                 f.write(',\n' + json.dumps(json_log_data))
                     else:
@@ -2328,6 +2360,8 @@ class AirconClass(object):
         self.settings['indoor_zone_sensor_active'], self.settings['indoor_zone_target_temperature'], self.settings['indoor_zone_current_temperature'] = self.mean_active_temperature(self.indoor_zone)
         if self.settings['indoor_zone_sensor_active'] != 0: # Only update the Indoor Climate Control Temperatures if at least one sensor is active
             homebridge.update_control_thermostat_temps(self.name, self.settings['indoor_zone_target_temperature'], self.settings['indoor_zone_current_temperature'])
+            self.thermostat_status[self.control_thermostat]['Current Temperature'] = self.settings['indoor_zone_current_temperature']
+            self.thermostat_status[self.control_thermostat]['Target Temperature'] = self.settings['indoor_zone_target_temperature']
     
     def mean_active_temperature(self, zone): # Called by update_zone_temps to calculate the mean target and current zone temperatures of a zone using the data from active sensors
         den_sum = 0
@@ -2342,23 +2376,32 @@ class AirconClass(object):
                 #print('Current Temperature', self.thermostat_status[name]['Current Temperature'])
                 target_num_sum += self.thermostat_status[name]['Target Temperature'] * self.thermostat_status[name]['Active']
                 current_num_sum += self.thermostat_status[name]['Current Temperature'] * self.thermostat_status[name]['Active']
-            target_temperature = target_num_sum / den_sum
-            current_temperature = current_num_sum / den_sum  
+            target_temperature = round(target_num_sum / den_sum, 1)
+            current_temperature = round(current_num_sum / den_sum, 1)  
         else:
             sensor_active = 0
             target_temperature = 1
             current_temperature = 1
         return sensor_active, target_temperature, current_temperature
 
+    def get_local_time(self):
+        non_dst = time.time() - time.timezone
+        dst = non_dst - time.altzone
+        if time.daylight < 0:
+            return dst
+        else:
+            return non_dst
+
     def control_aircon(self):
         if self.status['Remote Operation'] == True: # Only invoke aircon control is the aircon is under control of the Raspberry Pi
             #print ("Thermo Off Mode", self.settings)
             if self.settings['Thermo Off'] == False: # Only invoke aircon control if the control thermostat is not set to 'Off'
+                if self.settings['aircon_previous_mode'] == 'Off': # Start up in idle
+                    self.set_aircon_mode("Idle")
                 self.settings['Ventilate'] = False
                 #print("Thermo On Mode")
                 if self.settings['indoor_zone_sensor_active'] == 1: # Only invoke aircon control if at least one aircon temp sensor is active
                     #print("Indoor Active")
-                    mode, self.settings = self.check_power_change(self.status, self.settings, self.log_aircon_cost_data) # Check for power rate or consumption change
                     if self.settings['day_zone_sensor_active'] ^ self.settings['night_zone_sensor_active'] == 1: #If only one zone is active
                         #print("Only One Zone Active")
                         previous_target_day_zone = self.settings['target_day_zone'] # Record the current damper position to determine if a change needs to invoked
@@ -2373,9 +2416,6 @@ class AirconClass(object):
                             temperature_key = 'night_zone_current_temperature'
                             #print("Night Zone Active")
                         #print(" ")
-                        if self.settings['target_day_zone'] != previous_target_day_zone: # Move Damper if Target Zone changes
-                            mgr.print_update("Updating Homebridge Aircon Day Zone Percent from " + str(previous_target_day_zone) + " to " + str(self.settings['target_day_zone']) + " on ")
-                            self.move_damper(self.settings['target_day_zone'], self.log_damper_data)
                         if self.settings[temperature_key] != 1: # Don't do anything until the Temp is updated on startup
                             # Set the temp boundaries for a mode change to provide hysteresis
                             target_temp_high = self.settings['target_temperature'] + 0.4
@@ -2392,6 +2432,10 @@ class AirconClass(object):
                                     self.set_aircon_mode("Cool")
                                 if self.settings[temperature_key] < target_temp_low:#if actual temp is 0.5 degree lower than target temp, put in fan mode hi
                                     self.set_aircon_mode("Idle")
+                            mode, self.settings = self.check_power_change(self.status, self.settings, self.log_aircon_cost_data) # Check for power rate or consumption change
+                            if self.settings['target_day_zone'] != previous_target_day_zone: # Move Damper if Target Zone changes
+                                mgr.print_update("Updating Homebridge Aircon Day Zone Percent from " + str(previous_target_day_zone) + " to " + str(self.settings['target_day_zone']) + " on ")
+                                self.move_damper(self.settings['target_day_zone'], mode, self.log_damper_data)
                     else:
                         # Both Zones Active
                         # Set the temp boundaries for a mode change to provide hysteresis
@@ -2405,23 +2449,25 @@ class AirconClass(object):
                                     self.set_aircon_mode("Heat")
                                 if self.settings['day_zone_current_temperature'] > day_target_temp_high and self.settings['night_zone_current_temperature'] > night_target_temp_high: # If both zones are 0.5 degree higher than target temps, put in fan mode, lo
                                     self.set_aircon_mode("Idle")
-                                day_zone_gap = self.settings['day_zone_target_temperature'] - self.settings['day_zone_current_temperature']
-                                night_zone_gap = self.settings['night_zone_target_temperature'] - self.settings['night_zone_current_temperature']
-                                day_zone_gap_max = day_target_temp_high - self.settings['day_zone_current_temperature']
-                                night_zone_gap_max = night_target_temp_high - self.settings['night_zone_current_temperature']
-                                self.set_dual_zone_damper(day_zone_gap, night_zone_gap, day_zone_gap_max, night_zone_gap_max) # Set Damper based on gap between current and target temperatures 
+                                day_zone_gap = round(self.settings['day_zone_target_temperature'] - self.settings['day_zone_current_temperature'],1)
+                                night_zone_gap = round(self.settings['night_zone_target_temperature'] - self.settings['night_zone_current_temperature'],1)
+                                day_zone_gap_max = round(day_target_temp_high - self.settings['day_zone_current_temperature'],1)
+                                night_zone_gap_max = round(night_target_temp_high - self.settings['night_zone_current_temperature'],1)
+                                mode, self.settings = self.check_power_change(self.status, self.settings, self.log_aircon_cost_data) # Check for power rate or consumption change
+                                self.set_dual_zone_damper(day_zone_gap, night_zone_gap, day_zone_gap_max, night_zone_gap_max, mode) # Set Damper based on gap between current and target temperatures 
                             elif self.settings['Thermo Cool'] == True: # If in Thermo Cool Mode
                                 if self.settings['day_zone_current_temperature'] > self.settings['day_zone_target_temperature'] or self.settings['night_zone_current_temperature'] > self.settings['night_zone_target_temperature']: # Go into cool mode and stay there if there's gap against the target in at least one zone
                                     self.set_aircon_mode("Cool")
                                 if self.settings['day_zone_current_temperature'] < day_target_temp_low and self.settings['night_zone_current_temperature'] < night_target_temp_low: # If both zones are 0.5 degree lower than target temps, put in fan mode, lo
                                     self.set_aircon_mode("Idle")
-                                day_zone_gap = self.settings['day_zone_current_temperature'] - self.settings['day_zone_target_temperature']
-                                night_zone_gap = self.settings['night_zone_current_temperature'] - self.settings['night_zone_target_temperature']
-                                day_zone_gap_max = self.settings['day_zone_current_temperature'] - day_target_temp_low
-                                night_zone_gap_max = self.settings['night_zone_current_temperature'] - night_target_temp_low
-                                self.set_dual_zone_damper(day_zone_gap, night_zone_gap, day_zone_gap_max, night_zone_gap_max) # Set Damper based on gap between current and target temperatures
+                                day_zone_gap = round(self.settings['day_zone_current_temperature'] - self.settings['day_zone_target_temperature'],1)
+                                night_zone_gap = round(self.settings['night_zone_current_temperature'] - self.settings['night_zone_target_temperature'],1)
+                                day_zone_gap_max = round(self.settings['day_zone_current_temperature'] - day_target_temp_low,1)
+                                night_zone_gap_max = round(self.settings['night_zone_current_temperature'] - night_target_temp_low,1)
+                                mode, self.settings = self.check_power_change(self.status, self.settings, self.log_aircon_cost_data) # Check for power rate or consumption change
+                                self.set_dual_zone_damper(day_zone_gap, night_zone_gap, day_zone_gap_max, night_zone_gap_max, mode) # Set Damper based on gap between current and target temperatures
                             else:
-                                mgr.print_update ("Thermo Off Mode Invoked on ")
+                                mgr.print_update ("Thermo Off Mode Invoked on ")                     
                 else: # Stay in Fan Mode if no valid actual temp reading
                     print ("No Valid Temp")
                     self.set_aircon_mode("Idle")
@@ -2433,49 +2479,46 @@ class AirconClass(object):
                         current_power_rate = self.check_power_rate(update_date_time)
                         self.update_aircon_power_log(mode, current_power_rate, time.time(), self.log_aircon_cost_data)
                 else: # If the aircon is in Ventilation Mode
-                    if self.settings['target_day_zone'] != 60: # If the damper is not set to both zones
+                    if self.settings['target_day_zone'] != self.damper_balanced: # If the damper is not set to both zones
                         previous_target_day_zone = self.settings['target_day_zone'] # Record the current damper position to determine if a change needs to invoked
-                        self.settings['target_day_zone'] = 60 # Set the damper to both zones
-                        self.move_damper(self.settings['target_day_zone'], self.log_damper_data)
+                        self.settings['target_day_zone'] = self.damper_balanced # Set the damper to both zones
+                        self.move_damper(self.settings['target_day_zone'], 'Idle', self.log_damper_data)
                     mode, self.settings = self.check_power_change(self.status, self.settings, self.log_aircon_cost_data)         
 
-    def set_aircon_mode(self, mode): # Called by 'control_aircon' to set aircon mode
+    def set_aircon_mode(self, mode): # Called by 'control_aircon' to set aircon mode. Overides self.status to avoid waiting for status update from the aircon
         if mode == 'Heat':
             if self.status['Heat'] == False: # Only set to heat mode if it's not already been done
                 mgr.print_update("Heat Mode Selected on ")
-                self.print_aircon_mode_state()
+                self.print_zone_temp_states()
                 self.send_aircon_command('Heat Mode')
                 self.status['Heat'] = True
-            if self.status['Fan Hi'] == False: # Only set to Fan to Hi if it's not already been done
-                self.send_aircon_command('Fan Hi')
-                self.status['Fan Hi'] = True
+                self.status['Cool'] = False
+                self.status['Fan'] = False
         if mode == 'Cool':
             if self.status['Cool'] == False: # Only set to cool mode if it's not already been done
                 mgr.print_update("Cool Mode Selected on ")
-                self.print_aircon_mode_state()
-                client.publish(self.outgoing_mqtt_topic, '{"service": "Cool Mode"}')
+                self.print_zone_temp_states()
+                self.send_aircon_command('Cool Mode')
                 self.status['Cool'] = True
-            if self.status['Fan Hi'] == False: # Only set to Fan to Hi if it's not already been done
-                self.send_aircon_command('Fan Hi')
-                self.status['Fan Hi'] = True
+                self.status['Heat'] = False
+                self.status['Fan'] = False
         if mode == 'Idle':
             if self.status['Fan'] == False: # Only set to Fan Mode if it's not already been done
                 mgr.print_update("Idle Mode Selected on ")
-                self.print_aircon_mode_state() 
+                self.print_zone_temp_states() 
                 self.send_aircon_command('Fan Mode')
                 self.status['Fan'] = True
-            if self.status['Fan Lo'] == False: # Only set Fan to Lo if it's not already been done
-                self.send_aircon_command('Fan Lo')
-                self.status['Fan Lo'] = True
+                self.status['Cool'] = False
+                self.status['Heat'] = False
 
-    def print_aircon_mode_state(self):
+    def print_zone_temp_states(self):
         if self.settings['day_zone_sensor_active'] == 1 and self.settings['night_zone_sensor_active'] == 1: # If both zones are active
-            print(self.name, "Day Temp is", round(self.settings['day_zone_current_temperature'], 1), "Degrees. Day Target Temp is", round(self.settings['day_zone_target_temperature'], 1), "Degrees. Night Temp is",
-                                          round(self.settings['night_zone_current_temperature'], 1), "Degrees. Night Target Temp is", round(self.settings['night_zone_target_temperature'], 1), "Degrees")
+            print(self.name, "Day Temp is", self.settings['day_zone_current_temperature'], "Degrees. Day Target Temp is", self.settings['day_zone_target_temperature'], "Degrees. Night Temp is",
+                                          self.settings['night_zone_current_temperature'], "Degrees. Night Target Temp is", self.settings['night_zone_target_temperature'], "Degrees")
         elif self.settings['day_zone_sensor_active'] == 1 and self.settings['night_zone_sensor_active'] == 0: # If only day zone is active
-            print(self.name, "Day Temp is", round(self.settings['day_zone_current_temperature'], 1), "Degrees. Day Target Temp is", round(self.settings['day_zone_target_temperature'], 1), "Degrees.")
+            print(self.name, "Day Temp is", self.settings['day_zone_current_temperature'], "Degrees. Day Target Temp is", self.settings['day_zone_target_temperature'], "Degrees.")
         elif self.settings['day_zone_sensor_active'] == 0 and self.settings['night_zone_sensor_active'] == 1: # If only night zone is active
-            print(self.name, "Night Temp is", round(self.settings['night_zone_current_temperature'], 1), "Degrees. Night Target Temp is", round(self.settings['night_zone_target_temperature'], 1), "Degrees")
+            print(self.name, "Night Temp is", self.settings['night_zone_current_temperature'], "Degrees. Night Target Temp is", self.settings['night_zone_target_temperature'], "Degrees")
         else: # If neither zone is active
             pass
 
@@ -2534,7 +2577,7 @@ class AirconClass(object):
                   + ' hours with an average operating cost of $' + str(round(self.total_aircon_average_cost_per_hour, 2)) + ' per hour')
             if log_aircon_cost_data == True:
                 today = datetime.now()
-                time_data = time.time()
+                time_data = self.get_local_time()
                 time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
                 json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Total Hours': round(self.aircon_running_costs['total_hours'], 1), 'Total Cost': round(self.aircon_running_costs['total_cost'], 2),
                                  'Current Mode': mode, 'Previous Mode': self.settings['aircon_previous_mode'], 'Previous Mode Minutes': round(aircon_previous_mode_time_in_hours*60, 1),
@@ -2548,13 +2591,17 @@ class AirconClass(object):
         self.settings['aircon_previous_cost_per_hour'] = aircon_current_cost_per_hour
         #print('aircon_previous_power_rate =', self.settings['aircon_previous_power_rate'], 'aircon_previous_mode =', self.settings['aircon_previous_mode'])
 
-    def move_damper(self, damper_percent, log_damper_data): # Called by 'control_aircon' to move damper to a nominated zone
+    def move_damper(self, damper_percent, mode, log_damper_data): # Called by 'control_aircon' to move damper to a nominated zone
         #print_update("Move Damper to " + str(damper_percent) + " percent at ")
         if log_damper_data == True:
             today = datetime.now()
-            time_data = time.time()
+            time_data = self.get_local_time()
             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
-            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Damper Percent': damper_percent}
+            current_temps = {thermostat: self.thermostat_status[thermostat]['Current Temperature'] for thermostat in self.thermostat_status}
+            target_temps = {thermostat: self.thermostat_status[thermostat]['Target Temperature'] for thermostat in self.thermostat_status}
+            json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Damper Percent': damper_percent, 'Mode': mode, 'Thermostat Current Temps': current_temps, 'Thermostat Target Temps': target_temps,
+                             'Day Zone Current Temp': self.settings['day_zone_current_temperature'], 'Night Zone Current Temp': self.settings['night_zone_current_temperature'],
+                              'Day Zone Target Temp': self.settings['day_zone_target_temperature'], 'Night Zone Target Temp': self.settings['night_zone_target_temperature']}
             with open(self.aircon_config['Damper Log'], 'a') as f:
                 f.write(',\n' + json.dumps(json_log_data))
         aircon_json = {}
@@ -2563,96 +2610,111 @@ class AirconClass(object):
         client.publish(self.outgoing_mqtt_topic, json.dumps(aircon_json))
         homebridge.set_target_damper_position(self.name, damper_percent)
 
-    def set_dual_zone_damper(self, day_zone_gap, night_zone_gap, day_zone_gap_max, night_zone_gap_max): # Called by control_aircon in dual zone mode to set the damper to an optimal position, based on relative temperature gaps
-        if day_zone_gap == 0 and night_zone_gap == 0: # If both zones are equal to their target temperatures
-            #print('Damper: Balance Zones')
-            optimal_day_zone = 60 # Balance zones
-        elif day_zone_gap > 0 and night_zone_gap < 0: # If the Night Zone is the only zone that's passed its target temperature
-            #print('Damper: Night Zone Passed Target Temperature. Set to Day Zone')
-            optimal_day_zone = 100 # Move to Day Zone
-        elif day_zone_gap < 0 and night_zone_gap > 0: # If the Day Zone is the only zone that's passed its target temperature
-            #print('Damper: Day Zone Passed Target Temperature. Set to Night Zone')
-            optimal_day_zone = 0 # Move to Night Zone
-        else: # If both zones have passed their target temperatures or neither zone has passed its target temperature or only one zone is equal to its target temperature
-            day_proportion = day_zone_gap / (day_zone_gap + night_zone_gap)
-            night_proportion = night_zone_gap / (day_zone_gap + night_zone_gap)
-            if day_zone_gap >= 0 and night_zone_gap >= 0: # If neither zone has passed its target temperature or one has met and the other has not passed its target temperature
-                #print('Damper Algorithm: Neither Zone Passed Target Temperature')
-                optimal_day_zone_not_passed = 60 * day_proportion / (0.6 * day_proportion + 0.4 * night_proportion) # Damper is biased towards Day Zone
-                optimal_day_zone = optimal_day_zone_not_passed # Damper is biased towards Day Zone
-            elif day_zone_gap <= 0 and night_zone_gap <= 0: # If both zones have passed their target temperature or one has met and the other has passed their target temperature
-                #print('Damper Algorithm: Both Zones Passed Target Temperature')
-                if day_zone_gap_max < 0 and night_zone_gap_max >= 0: # Set to night zone if only day zone has reached max gap 
-                    optimal_day_zone = 0
-                elif night_zone_gap_max < 0 and day_zone_gap_max >= 0: # Set to day zone if only night zone has reached max gap 
-                    optimal_day_zone = 100
-                elif day_zone_gap_max < 0 and night_zone_gap_max < 0: # Balance zones if both have reached max gaps
-                    optimal_day_zone = 60
-                else: # No Zones met max gap 
-                    optimal_day_zone_passed = 60 * night_proportion / (0.6 * night_proportion + 0.4 * day_proportion) # Damper is biased towards Day Zone but invert for negative zone temp gaps
-                    optimal_day_zone = optimal_day_zone_passed
+    def set_dual_zone_damper(self, day_zone_gap, night_zone_gap, day_zone_gap_max, night_zone_gap_max, mode): # Called by control_aircon in dual zone mode to set the damper to an optimal position, based on relative temperature gaps
+        # Only adjust damper if either zone gap has changed by at least 0.2 degrees to minimise damper movements, unless at least one zone has reached its max/min temp where, in that case, a 0.1 degree change is actioned
+        if abs(day_zone_gap - self.settings['previous_day_zone_gap']) >= 0.2 or abs(night_zone_gap - self.settings['previous_night_zone_gap']) >= 0.2 or day_zone_gap_max < 0 or night_zone_gap_max < 0:
+            # The first three checks are to avoid cases where the dual damper algorithm has its denominator = 0
+            if day_zone_gap == 0 and night_zone_gap == 0: # If both zones are equal to their target temperatures
+                #print('Damper: Balance Zones')
+                optimal_day_zone = self.damper_balanced # Balance zones
+            elif day_zone_gap > 0 and night_zone_gap < 0: # If the Night Zone is the only zone that's passed its target temperature
+                #print('Damper: Night Zone Passed Target Temperature. Set to Day Zone')
+                optimal_day_zone = 100 # Move to Day Zone
+            elif day_zone_gap < 0 and night_zone_gap > 0: # If the Day Zone is the only zone that's passed its target temperature
+                #print('Damper: Day Zone Passed Target Temperature. Set to Night Zone')
+                optimal_day_zone = 0 # Move to Night Zone
+            else: # If both zones have passed their target temperatures or neither zone has passed its target temperature or only one zone is equal to its target temperature
+                day_proportion = day_zone_gap / (day_zone_gap + night_zone_gap)
+                night_proportion = night_zone_gap / (day_zone_gap + night_zone_gap)
+                if day_zone_gap >= 0 and night_zone_gap >= 0: # If neither zone has passed its target temperature
+                    #print('Damper Algorithm: Neither Zone Passed its target Temperature')
+                    optimal_day_zone_not_passed = self.damper_balanced * day_proportion / (self.damper_balanced/100 * day_proportion + (1-self.damper_balanced/100) * night_proportion)
+                    optimal_day_zone = optimal_day_zone_not_passed
+                else: # At least one zone has passed its target temperature
+                    #print('Damper Algorithm: At least one zone has passed its Target Temperature')
+                    if day_zone_gap_max == 0 and night_zone_gap_max == 0: # Don't change damper if both zones are almost at their max/min temps by equal amounts. This avoids an unnecessary damper change and potential temp overshoots/undershoots
+                        optimal_day_zone = self.settings['previous_optimal_day_zone']
+                    elif day_zone_gap_max < 0 and night_zone_gap_max >= 0: # Set to night zone if only day zone has met or exceeded its max/min temp 
+                        optimal_day_zone = 0
+                    elif night_zone_gap_max < 0 and day_zone_gap_max >= 0: # Set to day zone if only night zone has met or exceeded its max/min temp 
+                        optimal_day_zone = 100
+                    elif day_zone_gap_max >= 0 and night_zone_gap_max >= 0: # Optimise damper if neither zone has met its max/min temp
+                        optimal_day_zone_passed = self.damper_balanced * night_proportion / (self.damper_balanced/100 * night_proportion + (1-self.damper_balanced/100) * day_proportion) # Inverted for negative zone temp gaps
+                        optimal_day_zone = optimal_day_zone_passed
+                    elif day_zone_gap_max < 0 and night_zone_gap_max < 0: # Optimise damper against max gaps if both zones have met or exceeded their max/min temps
+                        if day_zone_gap_max == night_zone_gap_max:
+                            optimal_day_zone = self.settings['previous_optimal_day_zone'] # Don't change damper if both zones have met or exceeded their max/min temps by the same amount. This avoids an unnecessary damper change and potential temp overshoots/undershoots
+                        elif day_zone_gap_max < night_zone_gap_max:
+                            optimal_day_zone = 0 # Move to Night Zone if the Day Zone has exceeded its max/min temp by more than the Night Zone
+                        else:
+                            optimal_day_zone = 100 # Move to Day Zone if the Night Zone has exceeded its max/min temp by more than the Day Zone
+                    else:
+                        print('Unforseen Max Temp Gap Damper setting. Day Zone Gap', day_zone_gap, 'Night Zone Gap', night_zone_gap)
+                        optimal_day_zone = self.damper_balanced # Balance zones
+            self.settings['previous_optimal_day_zone'] = optimal_day_zone # Capture the new optimal_day_zone level
+            self.settings['previous_day_zone_gap'] = day_zone_gap # Capture the new day_zone_gap
+            self.settings['previous_night_zone_gap'] = night_zone_gap # Capture the new night_zone_gap
+            if optimal_day_zone >= 95:
+                set_day_zone = 100
+            elif optimal_day_zone >= 85 and optimal_day_zone < 95:
+                set_day_zone = 90
+            elif optimal_day_zone >= 75 and optimal_day_zone < 85:
+                set_day_zone = 80
+            elif optimal_day_zone >= 65 and optimal_day_zone < 75:
+                set_day_zone = 70
+            elif optimal_day_zone >= 55 and optimal_day_zone < 65:
+                set_day_zone = 60
+            elif optimal_day_zone >= 45 and optimal_day_zone < 55:
+                set_day_zone = 50
+            elif optimal_day_zone >= 35 and optimal_day_zone < 45:
+                set_day_zone = 40
+            elif optimal_day_zone >= 25 and optimal_day_zone < 35:
+                set_day_zone = 30
+            elif optimal_day_zone >= 15 and optimal_day_zone < 25:
+                set_day_zone = 20
+            elif optimal_day_zone >= 5 and optimal_day_zone < 15:
+                set_day_zone = 10
             else:
-                print('Unforseen Damper setting. Day Zone Gap', day_zone_gap, 'Night Zone Gap', night_zone_gap)
-                optimal_day_zone = 60 # Balance zones
-        if optimal_day_zone >= 95:
-            set_day_zone = 100
-        elif optimal_day_zone >= 85 and optimal_day_zone < 95:
-            set_day_zone = 90
-        elif optimal_day_zone >= 75 and optimal_day_zone < 85:
-            set_day_zone = 80
-        elif optimal_day_zone >= 65 and optimal_day_zone < 75:
-            set_day_zone = 70
-        elif optimal_day_zone >= 55 and optimal_day_zone < 65:
-            set_day_zone = 60
-        elif optimal_day_zone >= 45 and optimal_day_zone < 55:
-            set_day_zone = 50
-        elif optimal_day_zone >= 35 and optimal_day_zone < 45:
-            set_day_zone = 40
-        elif optimal_day_zone >= 25 and optimal_day_zone < 35:
-            set_day_zone = 30
-        elif optimal_day_zone >= 15 and optimal_day_zone < 25:
-            set_day_zone = 20
-        elif optimal_day_zone >= 5 and optimal_day_zone < 15:
-            set_day_zone = 10
-        else:
-            set_day_zone = 0
-        if self.settings['target_day_zone'] != set_day_zone:
-            self.settings['target_day_zone'] = set_day_zone
-            self.move_damper(self.settings['target_day_zone'], self.log_damper_data)
-            mgr.print_update('Moving ' + self.name + ' Damper to ' + str(self.settings['target_day_zone']) + ' Percent on ')
-            print (self.name + ' Day Zone Gap is ' + str(round(day_zone_gap, 2)) + ' Degrees. Night Zone Gap is ' + str(round(night_zone_gap, 2)) + ' Degrees')
-            print(self.name + ' Day Temp is ' + str(round(self.settings['day_zone_current_temperature'],1)) + ' Degrees. Day Target Temp is ' + str(self.settings['day_zone_target_temperature']) + ' Degrees. Night Temp is ' +
-                  str(round(self.settings['night_zone_current_temperature'],1)) + ' Degrees. Night Target Temp is ' + str(self.settings['night_zone_target_temperature']) + ' Degrees')
-
+                set_day_zone = 0
+            if self.settings['target_day_zone'] != set_day_zone: # If there's a change in the damper position
+                self.settings['target_day_zone'] = set_day_zone # Capture the new damper position
+                self.move_damper(self.settings['target_day_zone'], mode, self.log_damper_data)
+                mgr.print_update('Moving ' + self.name + ' Damper to ' + str(self.settings['target_day_zone']) + ' Percent on ')
+                print (self.name + ' Day Zone Gap is ' + str(day_zone_gap) + ' Degrees. Night Zone Gap is ' + str(night_zone_gap) + ' Degrees')
+                print(self.name + ' Day Temp is ' + str(self.settings['day_zone_current_temperature']) + ' Degrees. Day Target Temp is '
+                      + str(self.settings['day_zone_target_temperature']) + ' Degrees. Night Temp is ' +
+                      str(self.settings['night_zone_current_temperature']) + ' Degrees. Night Target Temp is ' + str(self.settings['night_zone_target_temperature']) + ' Degrees')
+            
     def populate_starting_aircon_effectiveness(self):
         # Read log file
+        print('Retrieving', self.name, 'Effectiveness Log File')
         name = self.aircon_config['Effectiveness Log']
         f = open(name, 'r')
         logged_data = f.read()
         logged_data = logged_data + ']'
-        if "Time" in logged_data: # Only parse the data if something has been logged
+        if "Mode" in logged_data: # Only parse the data if something has been logged
             parsed_data = json.loads(logged_data)
             latest_heat_entry = 0
             latest_cool_entry = 0  
             for entry in range(len(parsed_data)):
-                if "Max Heat" in parsed_data[entry]:
+                if parsed_data[entry]['Mode'] == 'Heat':
                     if entry > latest_heat_entry:
                         latest_heat_entry = entry
-                if "Max Cool" in parsed_data[entry]:
+                if parsed_data[entry]['Mode'] == 'Cool':
                     if entry > latest_cool_entry:
                         latest_cool_entry = entry
             if latest_heat_entry != 0:
                 for key in self.max_heating_effectiveness:
-                    #print(key, 'Max Heat', parsed_data[latest_heat_entry]["Max Heat"][key])
-                    #print(key, 'Min Heat', parsed_data[latest_heat_entry]["Min Heat"][key])
-                    self.max_heating_effectiveness[key] = parsed_data[latest_heat_entry]["Max Heat"][key]
-                    self.min_heating_effectiveness[key] = parsed_data[latest_heat_entry]["Min Heat"][key]
+                    #print(key, 'Max Heat', parsed_data[latest_heat_entry]["Max"][key])
+                    #print(key, 'Min Heat', parsed_data[latest_heat_entry]["Min"][key])
+                    self.max_heating_effectiveness[key] = parsed_data[latest_heat_entry]['Max'][key]
+                    self.min_heating_effectiveness[key] = parsed_data[latest_heat_entry]['Min'][key]
             if latest_cool_entry != 0:
                 for key in self.max_cooling_effectiveness:
-                    #print(key, 'Max Cool', parsed_data[latest_cool_entry]["Max Cool"][key])
-                    #print(key, 'Min Cool', parsed_data[latest_cool_entry]["Min Cool"][key])
-                    self.max_cooling_effectiveness[key] = parsed_data[latest_cool_entry]["Max Cool"][key]
-                    self.min_cooling_effectiveness[key] = parsed_data[latest_cool_entry]["Min Cool"][key]
+                    #print(key, 'Max Cool', parsed_data[latest_cool_entry]["Max"][key])
+                    #print(key, 'Min Cool', parsed_data[latest_cool_entry]["Min"][key])
+                    self.max_cooling_effectiveness[key] = parsed_data[latest_cool_entry]['Max'][key]
+                    self.min_cooling_effectiveness[key] = parsed_data[latest_cool_entry]['Min'][key]
 
     def populate_aircon_power_status(self):
         # Read log file
@@ -2749,7 +2811,11 @@ class FoobotDevice:
                          uuid=self.uuid,
                          period=0,
                          sampling=0)
-        req = self.session.get(url, headers=self.auth_header)
+        try:
+            req = self.session.get(url, headers=self.auth_header)
+        except requests.exceptions.ConnectionError as blueair_connection_error:
+            print('BlueAir Latest Readings Connection Error', blueair_connection_error)
+            return ('BlueAir Comms Error')
         response_json = fb.request_json_error_check(req)
         return response_json
 
@@ -2901,14 +2967,18 @@ class BlueAirClass(object):
     def get_device_settings(self):
         url = '{base}/device/{uuid}/attributes/'
         url = url.format(base=self.base_url, uuid=self.device.uuid)
-        req = self.session.get(url, headers=self.device.auth_header)
+        try:
+            req = self.session.get(url, headers=self.device.auth_header)
+        except requests.exceptions.ConnectionError as blueair_connection_error:
+            print('BlueAir Settings Connection Error', blueair_connection_error)
+            return ('BlueAir Comms Error')  
         response_json = fb.request_json_error_check(req)
         return response_json
 
             
 if __name__ == '__main__': # This is where to overall code kicks off
     # Create a Home Manager instance
-    mgr = NorthcliffHomeManagerClass(log_aircon_cost_data = True, log_aircon_damper_data = True, log_aircon_temp_data = True)
+    mgr = NorthcliffHomeManagerClass(log_aircon_cost_data = True, log_aircon_damper_data = True, log_aircon_temp_data = True, load_previous_aircon_effectiveness = True)
     # Create a Homebridge instance
     homebridge = HomebridgeClass(mgr.homebridge_outgoing_mqtt_topic, mgr.outdoor_zone, mgr.outdoor_sensors_homebridge_name, mgr.aircon_config, mgr.auto_air_purifier_names)
     # Create a Domoticz instance
