@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.63 Gen
-# Requires minimum Doorbell V2.0 and Aircon V3.44
+#Northcliff Home Manager - 7.64 Gen
+# Requires minimum Doorbell V2.0 and Aircon V3.47
 
 import paho.mqtt.client as mqtt
 import struct
@@ -2049,9 +2049,8 @@ class AirconClass(object):
         self.settings = {'Thermo Heat': False, 'Thermo Cool': False, 'Thermo Off': True, 'Ventilate' : False, 'indoor_thermo_mode': 'Cool', 'day_zone_target_temperature': 21,
                           'day_zone_current_temperature': 1, 'night_zone_target_temperature': 21, 'night_zone_current_temperature': 1,
                          'indoor_zone_target_temperature': 21, 'indoor_zone_current_temperature': 1, 'target_day_zone': self.damper_balanced, 'day_zone_sensor_active': 0,
-                          'night_zone_sensor_active': 0, 'indoor_zone_sensor_active': 0, 'aircon_previous_mode': 'Off', 'aircon_mode_change': False,
-                          'aircon_rate_change': False, 'aircon_previous_power_rate': 0, 'aircon_previous_update_time': time.time(),
-                          'aircon_previous_cost_per_hour': 0, 'previous_day_zone_gap': 0, 'previous_night_zone_gap': 0, 'previous_optimal_day_zone': self.damper_balanced}
+                          'night_zone_sensor_active': 0, 'indoor_zone_sensor_active': 0, 'aircon_previous_mode': 'Off', 'aircon_previous_power_rate': 0,
+                          'aircon_previous_update_time': time.time(), 'aircon_previous_cost_per_hour': 0, 'previous_day_zone_gap': 0, 'previous_night_zone_gap': 0, 'previous_optimal_day_zone': self.damper_balanced}
         
         # Set up effectiveness logging data
         self.aircon_log_items = self.indoor_zone + ['Day'] + ['Night']
@@ -2202,9 +2201,9 @@ class AirconClass(object):
             #mgr.print_update('Airconditioner Status update on ')
             #print(parsed_json)
             for status_item in self.status:
-                #if self.status[status_item] != parsed_json[status_item]:
-                    #print('Aircon', status_item, 'changed from', self.status[status_item], 'to', parsed_json[status_item])
-                self.status[status_item] = parsed_json[status_item]
+                if self.status[status_item] != parsed_json[status_item]:
+                    print('Aircon', status_item, 'changed from', self.status[status_item], 'to', parsed_json[status_item])
+                    self.status[status_item] = parsed_json[status_item]
                 homebridge.update_aircon_status(self.name, status_item, self.status[status_item])
                 domoticz.update_aircon_status(self.name, status_item, self.status[status_item])
                        
@@ -2486,36 +2485,33 @@ class AirconClass(object):
                         self.move_damper(self.settings['target_day_zone'], 'Idle', self.log_damper_data)
                     mode, self.settings = self.check_power_change(self.status, self.settings, self.log_aircon_cost_data)         
 
-    def set_aircon_mode(self, mode): # Called by 'control_aircon' to set aircon mode
+    def set_aircon_mode(self, mode): # Called by 'control_aircon' to set aircon mode. Overides self.status to avoid waiting for status update from the aircon
         if mode == 'Heat':
             if self.status['Heat'] == False: # Only set to heat mode if it's not already been done
                 mgr.print_update("Heat Mode Selected on ")
-                self.print_aircon_mode_state()
+                self.print_zone_temp_states()
                 self.send_aircon_command('Heat Mode')
                 self.status['Heat'] = True
-            if self.status['Fan Hi'] == False: # Only set to Fan to Hi if it's not already been done
-                self.send_aircon_command('Fan Hi')
-                self.status['Fan Hi'] = True
+                self.status['Cool'] = False
+                self.status['Fan'] = False
         if mode == 'Cool':
             if self.status['Cool'] == False: # Only set to cool mode if it's not already been done
                 mgr.print_update("Cool Mode Selected on ")
-                self.print_aircon_mode_state()
-                client.publish(self.outgoing_mqtt_topic, '{"service": "Cool Mode"}')
+                self.print_zone_temp_states()
+                self.send_aircon_command('Cool Mode')
                 self.status['Cool'] = True
-            if self.status['Fan Hi'] == False: # Only set to Fan to Hi if it's not already been done
-                self.send_aircon_command('Fan Hi')
-                self.status['Fan Hi'] = True
+                self.status['Heat'] = False
+                self.status['Fan'] = False
         if mode == 'Idle':
             if self.status['Fan'] == False: # Only set to Fan Mode if it's not already been done
                 mgr.print_update("Idle Mode Selected on ")
-                self.print_aircon_mode_state() 
+                self.print_zone_temp_states() 
                 self.send_aircon_command('Fan Mode')
                 self.status['Fan'] = True
-            if self.status['Fan Lo'] == False: # Only set Fan to Lo if it's not already been done
-                self.send_aircon_command('Fan Lo')
-                self.status['Fan Lo'] = True
+                self.status['Cool'] = False
+                self.status['Heat'] = False
 
-    def print_aircon_mode_state(self):
+    def print_zone_temp_states(self):
         if self.settings['day_zone_sensor_active'] == 1 and self.settings['night_zone_sensor_active'] == 1: # If both zones are active
             print(self.name, "Day Temp is", self.settings['day_zone_current_temperature'], "Degrees. Day Target Temp is", self.settings['day_zone_target_temperature'], "Degrees. Night Temp is",
                                           self.settings['night_zone_current_temperature'], "Degrees. Night Target Temp is", self.settings['night_zone_target_temperature'], "Degrees")
@@ -2688,7 +2684,7 @@ class AirconClass(object):
                 print(self.name + ' Day Temp is ' + str(self.settings['day_zone_current_temperature']) + ' Degrees. Day Target Temp is '
                       + str(self.settings['day_zone_target_temperature']) + ' Degrees. Night Temp is ' +
                       str(self.settings['night_zone_current_temperature']) + ' Degrees. Night Target Temp is ' + str(self.settings['night_zone_target_temperature']) + ' Degrees')
- 
+            
     def populate_starting_aircon_effectiveness(self):
         # Read log file
         print('Retrieving', self.name, 'Effectiveness Log File')
