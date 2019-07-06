@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.64 Gen
+#Northcliff Home Manager - 7.65 Gen
 # Requires minimum Doorbell V2.0 and Aircon V3.47
 
 import paho.mqtt.client as mqtt
@@ -2409,11 +2409,13 @@ class AirconClass(object):
                             self.settings['target_day_zone'] = 100
                             self.settings['target_temperature'] = self.settings['day_zone_target_temperature']
                             temperature_key = 'day_zone_current_temperature'
+                            active_zone = 'Day Zone'
                             #print("Day Zone Active")
                         else:
                             self.settings['target_day_zone'] = 0
                             self.settings['target_temperature'] = self.settings['night_zone_target_temperature']
                             temperature_key = 'night_zone_current_temperature'
+                            active_zone = 'Night Zone'
                             #print("Night Zone Active")
                         #print(" ")
                         if self.settings[temperature_key] != 1: # Don't do anything until the Temp is updated on startup
@@ -2434,7 +2436,8 @@ class AirconClass(object):
                                     self.set_aircon_mode("Idle")
                             mode, self.settings = self.check_power_change(self.status, self.settings, self.log_aircon_cost_data) # Check for power rate or consumption change
                             if self.settings['target_day_zone'] != previous_target_day_zone: # Move Damper if Target Zone changes
-                                mgr.print_update("Updating Homebridge Aircon Day Zone Percent from " + str(previous_target_day_zone) + " to " + str(self.settings['target_day_zone']) + " on ")
+                                mgr.print_update("Only " + active_zone + " is active for " + self.name + ". Moving Damper from " + str(previous_target_day_zone) + " percent to " +
+                                                  str(self.settings['target_day_zone']) + " percent on ")
                                 self.move_damper(self.settings['target_day_zone'], mode, self.log_damper_data)
                     else:
                         # Both Zones Active
@@ -2679,7 +2682,7 @@ class AirconClass(object):
             if self.settings['target_day_zone'] != set_day_zone: # If there's a change in the damper position
                 self.settings['target_day_zone'] = set_day_zone # Capture the new damper position
                 self.move_damper(self.settings['target_day_zone'], mode, self.log_damper_data)
-                mgr.print_update('Moving ' + self.name + ' Damper to ' + str(self.settings['target_day_zone']) + ' Percent on ')
+                mgr.print_update('Both zones active for ' + self.name + '. Moving Damper to ' + str(self.settings['target_day_zone']) + ' Percent on ')
                 print (self.name + ' Day Zone Gap is ' + str(day_zone_gap) + ' Degrees. Night Zone Gap is ' + str(night_zone_gap) + ' Degrees')
                 print(self.name + ' Day Temp is ' + str(self.settings['day_zone_current_temperature']) + ' Degrees. Day Target Temp is '
                       + str(self.settings['day_zone_target_temperature']) + ' Degrees. Night Temp is ' +
