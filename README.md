@@ -63,7 +63,7 @@ Control of window blinds is enabled via a Somfy myLink Interface. Each blind can
 * Link the blind control to door states so that any blinds covering doors cannot be closed if the door is open.
 
 ### Window Blind Control Apple Home App Screenshot
-![Window Blind Screenshot](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/9E822DE5-30AF-4EB6-B0DC-8774315C55F1.jpeg)
+![Window Blind Screenshot](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Living_Screen.png)
 
 ## Z-Wave Sensor Readings and Device Control
 The Home Manager interacts with Z-Wave sensors and devices via Domoticz and uses Homebridge to allow users to view and control those sensors and devices using the Apple Home App. The following screenshots provide some examples:
