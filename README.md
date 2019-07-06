@@ -55,7 +55,7 @@ This [Garage Door Opener](https://github.com/roscoe81/Garage-Door-Opener) is a s
 ![Garage Door Opener Packaging](https://github.com/roscoe81/Garage-Door-Opener/blob/master/Schematics%20and%20Photos/IMG_3204.png)
 
 ### Garage Door Opener Apple Home App Screenshot
-![Garage Door Opener Screenshot](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/64347399-0F79-48CE-B06A-61093BEE70FF.jpeg)
+![Garage Door Opener Screenshot](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Garage_Screen.png)
 
 ## Window Blind Control
 Control of window blinds is enabled via a Somfy myLink Interface. Each blind can be manually adjusted via the Apple Home App to one of three positions (closed, open or venetian). Home Manager also provides the capability to:
