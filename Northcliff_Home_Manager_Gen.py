@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.65 Gen
+#Northcliff Home Manager - 7.66 Gen
 # Requires minimum Doorbell V2.0 and Aircon V3.47
 
 import paho.mqtt.client as mqtt
@@ -2789,8 +2789,8 @@ class Foobot:
         try:
             good_json = response.json()
             return(good_json)
-        except requests.exceptions.RequestException as blueair_error:
-            print ('BlueAir Comms Error', blueair_error)
+        except json.JSONDecodeError:
+            print ('BlueAir Comms JSON Decode Error')
             return('BlueAir Comms Error')
 
 class FoobotDevice:
