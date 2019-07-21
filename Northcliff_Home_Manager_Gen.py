@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.69 Gen
+#Northcliff Home Manager - 7.70 Gen
 # Requires minimum Doorbell V2.0 and Aircon V3.47
 
 import paho.mqtt.client as mqtt
@@ -1505,10 +1505,12 @@ class DoorbellClass(object):
             #mgr.print_update('Received Heartbeat from Doorbell and sending Ack on ')
             client.publish(self.outgoing_mqtt_topic, '{"service": "Heartbeat Ack"}')
         elif parsed_json['service'] == 'Status Update':
-            for status_item in self.status: # For each status item in the doorbell status
-                self.status[status_item] = parsed_json[status_item] # Update doorbell status
+            mgr.print_update('Doorbell Status Update on ')
+            for status_item in self.status:
+                if self.status[status_item] != parsed_json[status_item]:
+                    print('Doorbell', status_item, 'changed from', self.status[status_item], 'to', parsed_json[status_item])
+                    self.status[status_item] = parsed_json[status_item]
                 homebridge.update_doorbell_status(parsed_json, status_item) # Send update to homebridge
-                #print(self.status)
         else:
             print('Invalid Doorbell Status', parsed_json)
         
@@ -2204,11 +2206,11 @@ class AirconClass(object):
         if parsed_json['service'] == 'Restart':
             mgr.print_update('Aircon Controller Restarted on ')
         elif parsed_json['service'] == 'Status Update':
-            #mgr.print_update('Airconditioner Status update on ')
+            mgr.print_update(self.name + ' status updated on ')
             #print(parsed_json)
             for status_item in self.status:
                 if self.status[status_item] != parsed_json[status_item]:
-                    print('Aircon', status_item, 'changed from', self.status[status_item], 'to', parsed_json[status_item])
+                    print(status_item, 'changed from', self.status[status_item], 'to', parsed_json[status_item])
                     self.status[status_item] = parsed_json[status_item]
                 homebridge.update_aircon_status(self.name, status_item, self.status[status_item])
                 domoticz.update_aircon_status(self.name, status_item, self.status[status_item])
