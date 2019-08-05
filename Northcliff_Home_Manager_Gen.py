@@ -1694,7 +1694,7 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                 else:
                     pass # Invalid sunlight level              
                 if print_blind_change == True: # If there's a change in blind position
-                    #print('Blind Change Summary')
+                    mgr.print_update('Blind State Change on ')
                     if new_high_sunlight != self.current_high_sunlight: # If there's a blind position change due to sun protection state
                         print("High Sunlight Level was:", self.current_high_sunlight, "It's Now Level:", new_high_sunlight, "with a light reading of", light_level, "Lux")
                     if door_state_changed == True: # If a change in door states, print blind update due to door state change
@@ -1707,6 +1707,8 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                             print('Blinds adjusted due to the external temperature moving inside the defined range')
                         else:
                             print('Blinds adjusted due to an external temperature moving outside the defined range')
+                        print('Current Temp is', current_temperature,  'degrees. Low Temp Threshold is', self.window_blind_config['low_temp_threshold'],
+                              'degrees. High Temp Threshold is', self.window_blind_config['high_temp_threshold'], 'degrees')
                     if self.auto_override_changed == True:
                         if self.auto_override == False:
                            print('Blinds adjusted due to auto_override being switched off')
