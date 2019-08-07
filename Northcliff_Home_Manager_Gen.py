@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.70 Gen
+#Northcliff Home Manager - 7.72 Gen
 # Requires minimum Doorbell V2.0 and Aircon V3.47
 
 import paho.mqtt.client as mqtt
@@ -1068,9 +1068,10 @@ class DomoticzClass(object): # Manages communications to and from the z-wave obj
         elif self.motion_label in sensor_name: # If it's a motion sensor
             multisensor[sensor_name[0:sensor_name.find(self.motion_label)]].process_motion(parsed_json)
         elif self.door_label in sensor_name: # If it's a door sensor
+            #print('Door Message', sensor_name, parsed_json)
             door_sensor[sensor_name[0:sensor_name.find(self.door_label)]].process_door_state_change(parsed_json)
         elif self.flood_label in sensor_name: # If it's a flood sensor
-            print('Flood Message', sensor_name, parsed_json)
+            #print('Flood Message', sensor_name, parsed_json)
             flood_sensor[sensor_name[0:sensor_name.find(self.flood_label)]].process_flood_state_change(parsed_json)
         elif self.dimmer_label in sensor_name: # If it's a light dimmer
             #print('Dimmer Message', sensor_name, parsed_json)
