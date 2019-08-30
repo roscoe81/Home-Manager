@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.72 Gen
+#Northcliff Home Manager - 7.73 Gen
 # Requires minimum Doorbell V2.0 and Aircon V3.47
 
 import paho.mqtt.client as mqtt
@@ -2060,7 +2060,7 @@ class AirconClass(object):
         
         # Set up effectiveness logging data
         self.aircon_log_items = self.indoor_zone + ['Day'] + ['Night']
-        self.active_temperature_history = {name: [0.0 for x in range (10)] for name in self.indoor_zone}
+        self.active_temperature_history = {name: [0.0 for x in range(11)] for name in self.indoor_zone}
         self.max_heating_effectiveness = {name: 0.0 for name in self.aircon_log_items}
         self.min_heating_effectiveness = {name: 9.9 for name in self.aircon_log_items}
         self.max_cooling_effectiveness = {name: 0.0 for name in self.aircon_log_items}
@@ -2107,7 +2107,7 @@ class AirconClass(object):
         domoticz.reset_aircon_thermostats(self.name, self.thermostat_status)
 
     def reset_effectiveness_log(self):
-        self.active_temperature_history = {name: [0.0 for x in range (10)] for name in self.indoor_zone}
+        self.active_temperature_history = {name: [0.0 for x in range(11)] for name in self.indoor_zone}
         self.max_heating_effectiveness = {name: 0.0 for name in self.aircon_log_items}
         self.min_heating_effectiveness = {name: 9.9 for name in self.aircon_log_items}
         self.max_cooling_effectiveness = {name: 0.0 for name in self.aircon_log_items}
@@ -2226,7 +2226,7 @@ class AirconClass(object):
         if (current_temp_update_time - self.temperature_update_time[name]) > 10: # Ignore duplicate temp data if temp comes in less than 10 seconds (Each sensor sends its temp twice)
             #print('name', name, 'Temperature', temperature, 'History', self.active_temperature_history[name])
             #print('Temp History Before Shift', self.active_temperature_history)
-            for pointer in range (9, 0, -1): # Move previous temperatures one position in the list to prepare for new temperature to be recorded
+            for pointer in range(10, 0, -1): # Move previous temperatures one position in the list to prepare for new temperature to be recorded
                 self.active_temperature_history[name][pointer] = self.active_temperature_history[name][pointer - 1]
             #print('Temp History after shift no pop', self.active_temperature_history)
             #print('')
@@ -2255,12 +2255,12 @@ class AirconClass(object):
             #print(name, 'Temp History after shift and pop', self.active_temperature_history[name])
             #print('')
             valid_temp_history = True
-            for pointer in range (0, 10):
+            for pointer in range(0, 11):
                 if self.active_temperature_history[name][pointer] == 0:
                     valid_temp_history = False
             #print('Valid temp history', valid_temp_history, 'Latest Reading', self.active_temperature_history[name][0])
             if valid_temp_history == True: #Update active temp change rate if we have 10 minutes of valid active temperatures
-                active_temp_change = round((self.active_temperature_history[name][0] - self.active_temperature_history[name][9])*6, 1) # calculate the temp change per hour over the past 10 minutes, given that there are two sensor reports every minute. +ve heating, -ve cooling
+                active_temp_change = round((self.active_temperature_history[name][0] - self.active_temperature_history[name][10])*6, 1) # calculate the temp change per hour over the past 10 minutes, given that there are two sensor reports every minute. +ve heating, -ve cooling
                 #print('Active Temp Change', active_temp_change)
                 if abs(active_temp_change - self.active_temperature_change_rate[name]) >= 0.1: #Log if there's a change in the rate
                     self.active_temperature_change_rate[name] = active_temp_change
@@ -2272,7 +2272,7 @@ class AirconClass(object):
                     time_data = self.get_local_time()
                     time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
                     json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Sensor': name, 'Latest Temp': self.active_temperature_history[name][0],
-                                      'Ten Minute Historical Temp': self.active_temperature_history[name][9],
+                                      'Ten Minute Historical Temp': self.active_temperature_history[name][10],
                                       'Active Temp Change Rate': self.active_temperature_change_rate[name], 'Active Day Change Rate': self.active_temperature_change_rate['Day'],
                                      'Active Night Change Rate': self.active_temperature_change_rate['Night'], 'Active Indoor Change Rate': self.active_temperature_change_rate['Indoor'],
                                      'Damper Position': self.status['Damper'], 'Outdoor Temp': multisensor[self.outdoor_temp_sensor].sensor_types_with_value['Temperature']}
@@ -2305,7 +2305,7 @@ class AirconClass(object):
                             time_data = self.get_local_time()
                             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
                             json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Sensor': name, 'Mode': 'Heat', 'Max': self.max_heating_effectiveness, 'Min': self.min_heating_effectiveness,
-                                              'Latest Temp': self.active_temperature_history[name][0], 'Ten Minute Historical Temp': self.active_temperature_history[name][9],
+                                              'Latest Temp': self.active_temperature_history[name][0], 'Ten Minute Historical Temp': self.active_temperature_history[name][10],
                                               'Outdoor Temp': multisensor[self.outdoor_temp_sensor].sensor_types_with_value['Temperature']}
                             with open(self.aircon_config['Effectiveness Log'], 'a') as f:
                                 f.write(',\n' + json.dumps(json_log_data))
@@ -2336,7 +2336,7 @@ class AirconClass(object):
                             time_data = self.get_local_time()
                             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')       
                             json_log_data = {'Time Data': time_data, 'Time': time_stamp, 'Sensor': name, 'Mode': 'Cool', 'Max': self.max_cooling_effectiveness, 'Min': self.min_cooling_effectiveness,
-                                              'Latest Temp': self.active_temperature_history[name][0], 'Ten Minute Historical Temp': self.active_temperature_history[name][9],
+                                              'Latest Temp': self.active_temperature_history[name][0], 'Ten Minute Historical Temp': self.active_temperature_history[name][10],
                                               'Outdoor Temp': multisensor[self.outdoor_temp_sensor].sensor_types_with_value['Temperature']}
                             with open(self.aircon_config['Effectiveness Log'], 'a') as f:
                                 f.write(',\n' + json.dumps(json_log_data))
