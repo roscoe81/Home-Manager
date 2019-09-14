@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.73 Gen
+#Northcliff Home Manager - 7.75 Gen
 # Requires minimum Doorbell V2.0 and Aircon V3.47
 
 import paho.mqtt.client as mqtt
@@ -65,10 +65,10 @@ class NorthcliffHomeManagerClass(object):
         self.garage_door_incoming_mqtt_topic = 'GarageStatus'
         self.garage_door_outgoing_mqtt_topic = 'GarageControl'  
         # Set up the config for each window blind
-        self.window_blind_config = {'Living Room Blinds': {'blind ip address': '<mylink ip address>', 'blind port': 44100, 'light sensor': 'South Balcony',
+        self.window_blind_config = {'Living Room Blinds': {'blind host name': '<mylink host name>', 'blind port': 44100, 'light sensor': 'South Balcony',
                                                             'temp sensor': 'North Balcony', 'sunlight threshold 0': 100,'sunlight threshold 1': 1000,
-                                                            'sunlight threshold 2': 12000, 'sunlight threshold 3': 20000, 'high_temp_threshold': 27.5,
-                                                            'low_temp_threshold': 15.5,
+                                                            'sunlight threshold 2': 12000, 'sunlight threshold 3': 20000, 'high_temp_threshold': 28,
+                                                            'low_temp_threshold': 15, 'sunny_season_start': 10, 'sunny_season_finish': 3,
                                                             'blind_doors': {'North Living Room': {'door_state': 'Open','door_state_changed': False},
                                                                              'South Living Room': {'door_state': 'Open', 'door_state_changed': False}},
                                                             'status':{'Left Window': 'Open', 'Left Door': 'Open', 'Right Door': 'Open',
@@ -517,7 +517,7 @@ class HomebridgeClass(object):
                 ventilation = parsed_json['value']
                 #print('Ventilation Button Pressed')
                 aircon[aircon_name].process_ventilation_button(ventilation)
-            if parsed_json['service_name'] == 'Reset Effectiveness Log':
+            elif parsed_json['service_name'] == 'Reset Effectiveness Log':
                 print('Reset', aircon_name, 'Effectiveness Log Pressed')
                 aircon[aircon_name].reset_effectiveness_log()
                 time.sleep(0.5)
@@ -1514,6 +1514,7 @@ class DoorbellClass(object):
                 homebridge.update_doorbell_status(parsed_json, status_item) # Send update to homebridge
         else:
             print('Invalid Doorbell Status', parsed_json)
+
         
     def process_button(self, button_name):
         doorbell_json = {}
@@ -1537,13 +1538,14 @@ class DoorbellClass(object):
         #print('Update Doorbell Door State', doorbell_json)
         client.publish(self.outgoing_mqtt_topic, json.dumps(doorbell_json))   
 
-class WindowBlindClass(object): # To do: Provide more flexibility with blind_id and position
+class WindowBlindClass(object):
     def __init__(self, blind_room, window_blind_config):
         self.blind = blind_room
         #print ('Instantiated Window Blind', self, blind_room)
         self.window_blind_config = window_blind_config
-        self.blind_ip_address = self.window_blind_config['blind ip address']
+        self.blind_host_name = self.window_blind_config['blind host name']
         self.blind_port = self.window_blind_config['blind port']
+        self.blind_ip_address=socket.gethostbyname(self.blind_host_name)
         self.current_high_sunlight = 0 # Set initial sunlight level to 0
         self.previous_blind_temp_threshold = False
         self.call_control_blinds = False
@@ -1650,6 +1652,7 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
     def room_sunlight_control(self, light_level):
         # Called when a changed in the blind's light sensor, doors or auto_override button
         current_temperature = multisensor[self.window_blind_config['temp sensor']].sensor_types_with_value['Temperature']
+        sunny_season = self.check_season(self.window_blind_config['sunny_season_start'], self.window_blind_config['sunny_season_finish'])
         if current_temperature != 1: # Wait for valid temp reading (1 is startup temp)
             #mgr.print_update('Blind Control invoked on ')
             # Has temp passed thresholds?
@@ -1682,12 +1685,12 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                 #mgr.print_update ('Blind change algorithm triggered on ')
                 print_blind_change = False
                 if new_high_sunlight == 4:
-                    print_blind_change = self.set_blind_sunlight_4(door_open, self.auto_override)
+                    print_blind_change = self.set_blind_sunlight_4(door_open, self.auto_override, sunny_season)
                 elif new_high_sunlight == 3:
-                    print_blind_change = self.set_blind_sunlight_3(door_open, door_state_changed, self.previous_high_sunlight, self.auto_override)           
+                    print_blind_change = self.set_blind_sunlight_3(door_open, door_state_changed, self.previous_high_sunlight, self.auto_override, sunny_season)           
                 elif new_high_sunlight == 2:
                     print_blind_change = self.set_blind_sunlight_2(door_open, self.previous_high_sunlight, self.auto_override,
-                                                                                                  current_blind_temp_threshold, current_temperature)    
+                                                                                                  current_blind_temp_threshold, current_temperature, sunny_season)    
                 elif new_high_sunlight == 1:
                     print_blind_change = self.set_blind_sunlight_1(door_open, self.auto_override, current_blind_temp_threshold, current_temperature)                                                                                     
                 elif new_high_sunlight == 0:
@@ -1725,6 +1728,15 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
             else: # Nothing changed that affects blind states
                 #print('Blind Status Unchanged')
                 pass
+
+    def check_season(self, sunny_season_start, sunny_season_finish):
+        now = datetime.now()
+        month = now.month
+        if month >= sunny_season_start or month <= sunny_season_finish:
+            sunny_season = True
+        else:
+            sunny_season = False
+        return sunny_season
 
     def check_outside_temperatures(self, current_temperature, previous_blind_temp_threshold, hysteresis_gap):
         homebridge.update_blind_current_temps(self.blind, current_temperature)
@@ -1776,87 +1788,106 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
         #print ('Door State Changed?', door_state_changed, 'Any Doors Open?', door_open)
         return(door_open, door_state_changed)
 
-    def set_blind_sunlight_4(self, door_open, auto_override):
-        #print('High Sunlight Level 4 Invoked')
+    def set_blind_sunlight_4(self, door_open, auto_override, sunny_season):
+        print('High Sunlight Level 4 Invoked with Sunny Season', sunny_season)
         print_blind_change = False
         if auto_override == False:
-            if door_open == False: # Set right window blind to Venetian, close doors and left blind if both doors closed
-                self.window_blind_config['status']['Left Window'] = 'Closed'
-                self.window_blind_config['status']['All Doors'] = 'Closed'
-                self.window_blind_config['status']['Left Door'] = 'Closed'
-                self.window_blind_config['status']['Right Door'] = 'Closed'
-                self.window_blind_config['status']['Right Window'] = 'Venetian'
-                self.window_blind_config['status']['All Blinds'] = 'Closed'
-                print_blind_change = self.all_blinds_venetian()
-                self.move_blind('Left Window', 'up') # Raise left window blind for 0.5 seconds
-                time.sleep(0.495)
-                self.move_blind('Left Window', 'stop') # Stop left window blind
-                self.move_blind('All Doors', 'up') # Raise all door blinds for 0.5 seconds
-                time.sleep(0.495)
-                self.move_blind('All Doors', 'stop') # Stop all door blinds
-            else: # If at least one door is open
-                self.move_blind('All Doors', 'up') # Raise all door blinds                   
-                self.move_blind('All Windows', 'down')
-                time.sleep(25)
-                self.move_blind('Left Window', 'up')
-                time.sleep(0.495)
-                self.move_blind('Left Window', 'stop')
-                print_blind_change = True
-                # Set blind status to align with blind position
-                self.window_blind_config['status']['Left Window'] = 'Closed'
-                self.window_blind_config['status']['Right Window'] = 'Venetian'
-                self.window_blind_config['status']['All Doors'] = 'Open'
-                self.window_blind_config['status']['Left Door'] = 'Open'
-                self.window_blind_config['status']['Right Door'] = 'Open'
-                self.window_blind_config['status']['All Blinds'] = 'Venetian'
-        else:
-            #print('No Blind Change. Auto Blind Control is overridden')
-            pass
-        return(print_blind_change)
-
-    def set_blind_sunlight_3(self, door_open, door_state_changed, previous_high_sunlight, auto_override):
-        #print('High Sunlight Level 3 Invoked')
-        print_blind_change = False
-        if auto_override == False:
-            if previous_high_sunlight < 3: # If this level has been reached after being in levels 0, 1 or 2
-                if door_open == False: # If both doors closed, all blinds to Venetian
+            if sunny_season == True:
+                if door_open == False:
+                    # Set right window blind to Venetian, close doors and left blind if both doors closed
+                    self.window_blind_config['status']['Left Window'] = 'Closed'
+                    self.window_blind_config['status']['All Doors'] = 'Closed'
+                    self.window_blind_config['status']['Left Door'] = 'Closed'
+                    self.window_blind_config['status']['Right Door'] = 'Closed'
+                    self.window_blind_config['status']['Right Window'] = 'Venetian'
+                    self.window_blind_config['status']['All Blinds'] = 'Closed'
                     print_blind_change = self.all_blinds_venetian()
-                else: # Open door blinds and set window blinds to 50% if at least one door is open
-                    self.move_blind('All Doors', 'up')
+                    self.move_blind('Left Window', 'up') # Raise left window blind for 0.5 seconds
+                    time.sleep(0.495)
+                    self.move_blind('Left Window', 'stop') # Stop left window blind
+                    self.move_blind('All Doors', 'up') # Raise all door blinds for 0.5 seconds
+                    time.sleep(0.495)
+                    self.move_blind('All Doors', 'stop') # Stop all door blinds
+                else: # If at least one door is open
+                    self.move_blind('All Doors', 'up') # Raise all door blinds                   
                     self.move_blind('All Windows', 'down')
+                    time.sleep(25)
+                    self.move_blind('Left Window', 'up')
+                    time.sleep(0.495)
+                    self.move_blind('Left Window', 'stop')
                     print_blind_change = True
-                    # Set blind status
-                    self.window_blind_config['status']['All Windows'] = 'Venetian'
-                    self.window_blind_config['status']['Left Window'] = 'Venetian'
+                    # Set blind status to align with blind position
+                    self.window_blind_config['status']['Left Window'] = 'Closed'
                     self.window_blind_config['status']['Right Window'] = 'Venetian'
                     self.window_blind_config['status']['All Doors'] = 'Open'
                     self.window_blind_config['status']['Left Door'] = 'Open'
                     self.window_blind_config['status']['Right Door'] = 'Open'
-                    self.window_blind_config['status']['All Blinds'] = 'Venetian'             
-            else: # If this level has been reached after being in level 4
-                if door_state_changed == True: # If the door state has changed
-                    if door_open == False: # If the door are closed
-                        self.window_blind_config['status']['All Doors'] = 'Closed'
-                        self.window_blind_config['status']['Left Door'] = 'Closed'
-                        self.window_blind_config['status']['Right Door'] = 'Closed'
-                        print_blind_change = self.close_door_impacting_blind('All Doors')
-                    else: # Open door blinds if the doors have been opened 
-                        self.move_blind('All Doors', 'up')
-                        print_blind_change = True
-                        # Set blind status
-                        self.window_blind_config['status']['All Doors'] = 'Open'
-                        self.window_blind_config['status']['Left Door'] = 'Open'
-                        self.window_blind_config['status']['Right Door'] = 'Open'
-                        self.window_blind_config['status']['All Blinds'] = 'Venetian'
-                else: # Do nothing if there has been no change to the door state
-                    pass
+                    self.window_blind_config['status']['All Blinds'] = 'Venetian'
+            else: # If not sunny_season
+                    # Set left window blind to venetian
+                    self.window_blind_config['status']['Left Window'] = 'Venetian'
+                    self.window_blind_config['status']['All Doors'] = 'Open'
+                    self.window_blind_config['status']['Left Door'] = 'Open'
+                    self.window_blind_config['status']['Right Window'] = 'Open'
+                    self.window_blind_config['status']['All Blinds'] = 'Venetian'
+                    self.move_blind('Left Window', 'down') # Set left window to venetian
+                    print_blind_change = True
         else:
             #print('No Blind Change. Auto Blind Control is overridden')
             pass
         return(print_blind_change)
 
-    def set_blind_sunlight_2(self, door_open, previous_high_sunlight, auto_override, current_blind_temp_threshold, current_temperature):
-        #print('High Sunlight Level 2 Invoked')
+    def set_blind_sunlight_3(self, door_open, door_state_changed, previous_high_sunlight, auto_override, sunny_season):
+        print('High Sunlight Level 3 Invoked with Sunny Season', sunny_season)
+        print_blind_change = False
+        if auto_override == False:
+            if sunny_season == True:
+                if previous_high_sunlight < 3: # If this level has been reached after being in levels 0, 1 or 2
+                    if door_open == False: # If both doors closed, all blinds to Venetian
+                        print_blind_change = self.all_blinds_venetian()
+                    else: # Open door blinds and set window blinds to 50% if at least one door is open
+                        self.move_blind('All Doors', 'up')
+                        self.move_blind('All Windows', 'down')
+                        print_blind_change = True
+                        # Set blind status
+                        self.window_blind_config['status']['All Windows'] = 'Venetian'
+                        self.window_blind_config['status']['Left Window'] = 'Venetian'
+                        self.window_blind_config['status']['Right Window'] = 'Venetian'
+                        self.window_blind_config['status']['All Doors'] = 'Open'
+                        self.window_blind_config['status']['Left Door'] = 'Open'
+                        self.window_blind_config['status']['Right Door'] = 'Open'
+                        self.window_blind_config['status']['All Blinds'] = 'Venetian'             
+                else: # If this level has been reached after being in level 4
+                    if door_state_changed == True: # If the door state has changed
+                        if door_open == False: # If the door are closed
+                            self.window_blind_config['status']['All Doors'] = 'Closed'
+                            self.window_blind_config['status']['Left Door'] = 'Closed'
+                            self.window_blind_config['status']['Right Door'] = 'Closed'
+                            print_blind_change = self.close_door_impacting_blind('All Doors')
+                        else: # Open door blinds if the doors have been opened 
+                            self.move_blind('All Doors', 'up')
+                            print_blind_change = True
+                            # Set blind status
+                            self.window_blind_config['status']['All Doors'] = 'Open'
+                            self.window_blind_config['status']['Left Door'] = 'Open'
+                            self.window_blind_config['status']['Right Door'] = 'Open'
+                            self.window_blind_config['status']['All Blinds'] = 'Venetian'
+                    else: # Do nothing if there has been no change to the door state
+                        pass
+            else: # Ensure that door blinds are open when not sunny_season
+                self.move_blind('All Doors', 'up')
+                print_blind_change = True
+                # Set blind status
+                self.window_blind_config['status']['All Doors'] = 'Open'
+                self.window_blind_config['status']['Left Door'] = 'Open'
+                self.window_blind_config['status']['Right Door'] = 'Open'            
+        else:
+            #print('No Blind Change. Auto Blind Control is overridden')
+            pass
+        return(print_blind_change)
+
+    def set_blind_sunlight_2(self, door_open, previous_high_sunlight, auto_override, current_blind_temp_threshold, current_temperature, sunny_season):
+        print('High Sunlight Level 2 Invoked with Sunny Season', sunny_season)
         print_blind_change = False
         if auto_override == False:
             if previous_high_sunlight < 2: # If this level has been reached after being in levels 0 or 1
@@ -1878,27 +1909,30 @@ class WindowBlindClass(object): # To do: Provide more flexibility with blind_id 
                               #'Current temperature is', current_temperature, 'degrees')
                     print_blind_change = self.raise_all_blinds()
             else: # If this level has been reached after being in levels 3 or 4
-                if door_open == False: # Set all blinds to venetian state if both doors are closed
-                    print_blind_change = self.all_blinds_venetian()
-                else: # Open door blinds and set window blinds to venetian state if at least one door is open
-                    self.move_blind('All Doors', 'up')
-                    self.move_blind('All Windows', 'down')
-                    print_blind_change = True
-                    # Set blind status
-                    self.window_blind_config['status']['All Windows'] = 'Venetian'
-                    self.window_blind_config['status']['Left Window'] = 'Venetian'
-                    self.window_blind_config['status']['Right Window'] = 'Venetian'
-                    self.window_blind_config['status']['All Doors'] = 'Open'
-                    self.window_blind_config['status']['Left Door'] = 'Open'
-                    self.window_blind_config['status']['Right Door'] = 'Open'
-                    self.window_blind_config['status']['All Blinds'] = 'Venetian'
+                if sunny_season == True:
+                    if door_open == False: # Set all blinds to venetian state if both doors are closed
+                        print_blind_change = self.all_blinds_venetian()
+                    else: # Open door blinds and set window blinds to venetian state if at least one door is open
+                        self.move_blind('All Doors', 'up')
+                        self.move_blind('All Windows', 'down')
+                        print_blind_change = True
+                        # Set blind status
+                        self.window_blind_config['status']['All Windows'] = 'Venetian'
+                        self.window_blind_config['status']['Left Window'] = 'Venetian'
+                        self.window_blind_config['status']['Right Window'] = 'Venetian'
+                        self.window_blind_config['status']['All Doors'] = 'Open'
+                        self.window_blind_config['status']['Left Door'] = 'Open'
+                        self.window_blind_config['status']['Right Door'] = 'Open'
+                        self.window_blind_config['status']['All Blinds'] = 'Venetian'
+                else: # Open all blinds if not sunny_season
+                    print_blind_change = self.raise_all_blinds()
         else:
             #print('No Blind Change. Auto Blind Control is overridden')
             pass
         return(print_blind_change)
 
     def set_blind_sunlight_1(self, door_open, auto_override, current_blind_temp_threshold, current_temperature):
-        #print('High Sunlight Level 1 Invoked')
+        print('High Sunlight Level 1 Invoked')
         print_blind_change = False
         if auto_override == False:
             if current_blind_temp_threshold == True and door_open == False: # Lower all blinds if the outside temperature is outside the pre-set thresholds and the doors are closed.
@@ -2207,7 +2241,7 @@ class AirconClass(object):
             #mgr.print_update('Received Heartbeat from Aircon and sending Ack on ')
             self.send_aircon_command('Heartbeat Ack')
         if parsed_json['service'] == 'Restart':
-            mgr.print_update('Aircon Controller Restarted on ')
+            mgr.print_update(self.name + ' Controller Restarted on ')
         elif parsed_json['service'] == 'Status Update':
             mgr.print_update(self.name + ' status updated on ')
             #print(parsed_json)
@@ -2826,8 +2860,8 @@ class FoobotDevice:
             return ('BlueAir Comms Error')
         except ValueError as blueair_comms_error:
             print('BlueAir Latest Readings Value Error', blueair_comms_error)
-            return ('BlueAir Comms Error') 
-
+            return ('BlueAir Comms Error')
+    
 class BlueAirClass(object):
     ## Adds BlueAir control to Foobot and FoobotDevice Classes from https://github.com/philipbl/pyfoobot to use the BlueAir homehost
     ## Thanks to https://github.com/mylesagray/homebridge-blueair
@@ -2992,7 +3026,7 @@ class BlueAirClass(object):
         except ValueError as blueair_comms_error:
             print('BlueAir Settings Value Error', blueair_comms_error)
             return ('BlueAir Comms Error')
-            
+        
 if __name__ == '__main__': # This is where to overall code kicks off
     # Create a Home Manager instance
     mgr = NorthcliffHomeManagerClass(log_aircon_cost_data = True, log_aircon_damper_data = True, log_aircon_temp_data = True, load_previous_aircon_effectiveness = True)
