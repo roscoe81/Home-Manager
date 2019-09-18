@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 7.75 Gen
+#Northcliff Home Manager - 7.76 Gen
 # Requires minimum Doorbell V2.0 and Aircon V3.47
 
 import paho.mqtt.client as mqtt
@@ -68,7 +68,7 @@ class NorthcliffHomeManagerClass(object):
         self.window_blind_config = {'Living Room Blinds': {'blind host name': '<mylink host name>', 'blind port': 44100, 'light sensor': 'South Balcony',
                                                             'temp sensor': 'North Balcony', 'sunlight threshold 0': 100,'sunlight threshold 1': 1000,
                                                             'sunlight threshold 2': 12000, 'sunlight threshold 3': 20000, 'high_temp_threshold': 28,
-                                                            'low_temp_threshold': 15, 'sunny_season_start': 10, 'sunny_season_finish': 3,
+                                                            'low_temp_threshold': 15, 'sunny_season_start': 10, 'sunny_season_finish': 3, 'sunlight_level_4_persist_time': 1800,
                                                             'blind_doors': {'North Living Room': {'door_state': 'Open','door_state_changed': False},
                                                                              'South Living Room': {'door_state': 'Open', 'door_state_changed': False}},
                                                             'status':{'Left Window': 'Open', 'Left Door': 'Open', 'Right Door': 'Open',
@@ -1554,6 +1554,9 @@ class WindowBlindClass(object):
         self.auto_override = False
         self.auto_override_changed = False
         self.previous_door_open = True
+        self.sunlight_level_4_persist_time = self.window_blind_config['sunlight_level_4_persist_time']
+        self.previous_sunlight_level_4_blind_change_time = time.time()
+        self.sunlight_level_4_persist_time_previously_exceeded = False
                                                               
     def control_blinds(self, blind, blind_controls):
         mgr.print_update('Invoked Manual Blind Control on ')
@@ -1680,17 +1683,26 @@ class WindowBlindClass(object):
                    #'Daylight?', light_level > self.window_blind_config['sunlight threshold 0'])
             if new_high_sunlight != self.current_high_sunlight: # Capture the previous sunlight level if the sunlight level has changed
                 self.previous_high_sunlight = self.current_high_sunlight # Used in Sunlight Levels 2 and 3 to determine is the sunlight level has increased or decreased
-            if (new_high_sunlight != self.current_high_sunlight or door_state_changed == True or
-                temp_passed_threshold == True or (self.auto_override_changed == True and self.auto_override == False)): # Has there been a blind-affecting change?
-                #mgr.print_update ('Blind change algorithm triggered on ')
+            sunlight_level_change = (new_high_sunlight != self.current_high_sunlight)
+            auto_override_newly_disabled = (self.auto_override_changed == True and self.auto_override == False)
+            sunlight_level_4_persist_time_now_exceeded = ((time.time() - self.previous_sunlight_level_4_blind_change_time) >= self.sunlight_level_4_persist_time)
+            trigger_falling_sunlight_level_2_blind_change = (new_high_sunlight == 2 and self.previous_high_sunlight > 2 and self.sunlight_level_4_persist_time_previously_exceeded == False and
+                                                                    sunlight_level_4_persist_time_now_exceeded)
+            if (sunlight_level_change or door_state_changed or temp_passed_threshold or auto_override_newly_disabled or trigger_falling_sunlight_level_2_blind_change): # Has there been a blind-affecting change?
+                mgr.print_update ('Blind change algorithm triggered on ')
+                print('Sunlight Level Change:', sunlight_level_change, 'Door State Changed:', door_state_changed, 'Temp Passed Threshold:',
+                       temp_passed_threshold, 'Auto Override Newly Disabled:', auto_override_newly_disabled, 'Trigger Falling Sunlight Level 2 Blind Change:', trigger_falling_sunlight_level_2_blind_change)
                 print_blind_change = False
                 if new_high_sunlight == 4:
                     print_blind_change = self.set_blind_sunlight_4(door_open, self.auto_override, sunny_season)
+                    if print_blind_change == True:
+                        self.previous_sunlight_level_4_blind_change_time = time.time()
+                        self.sunlight_level_4_persist_time_previously_exceeded = False
                 elif new_high_sunlight == 3:
                     print_blind_change = self.set_blind_sunlight_3(door_open, door_state_changed, self.previous_high_sunlight, self.auto_override, sunny_season)           
                 elif new_high_sunlight == 2:
-                    print_blind_change = self.set_blind_sunlight_2(door_open, self.previous_high_sunlight, self.auto_override,
-                                                                                                  current_blind_temp_threshold, current_temperature, sunny_season)    
+                    print_blind_change, self.sunlight_level_4_persist_time_previously_exceeded = self.set_blind_sunlight_2(door_open, self.previous_high_sunlight, self.auto_override, current_blind_temp_threshold,
+                                                                    current_temperature, sunny_season, self.previous_sunlight_level_4_blind_change_time, self.sunlight_level_4_persist_time)    
                 elif new_high_sunlight == 1:
                     print_blind_change = self.set_blind_sunlight_1(door_open, self.auto_override, current_blind_temp_threshold, current_temperature)                                                                                     
                 elif new_high_sunlight == 0:
@@ -1716,6 +1728,8 @@ class WindowBlindClass(object):
                     if self.auto_override_changed == True:
                         if self.auto_override == False:
                            print('Blinds adjusted due to auto_override being switched off')
+                    if trigger_falling_sunlight_level_2_blind_change == True:
+                        print('Blinds Adjusted due to sunlight level falling to Level 2 and the Level 4 persist time of', round(self.sunlight_level_4_persist_time/60,0),'minutes was exceeded')
                 else: # No blind change, just a threshold change in the blind hysteresis gaps
                     #print("High Sunlight Level Now", new_high_sunlight, "with a light reading of", light_level, "Lux and no change of blind position")
                     pass
@@ -1886,9 +1900,11 @@ class WindowBlindClass(object):
             pass
         return(print_blind_change)
 
-    def set_blind_sunlight_2(self, door_open, previous_high_sunlight, auto_override, current_blind_temp_threshold, current_temperature, sunny_season):
+    def set_blind_sunlight_2(self, door_open, previous_high_sunlight, auto_override, current_blind_temp_threshold, current_temperature, sunny_season, previous_sunlight_level_4_blind_change_time,
+                              sunlight_level_4_persist_time):
         print('High Sunlight Level 2 Invoked with Sunny Season', sunny_season)
         print_blind_change = False
+        sunlight_level_4_persist_time_exceeded = (time.time() - previous_sunlight_level_4_blind_change_time > sunlight_level_4_persist_time)
         if auto_override == False:
             if previous_high_sunlight < 2: # If this level has been reached after being in levels 0 or 1
                 if current_blind_temp_threshold == True: # If the outside temperature is outside the pre-set thresholds
@@ -1910,26 +1926,29 @@ class WindowBlindClass(object):
                     print_blind_change = self.raise_all_blinds()
             else: # If this level has been reached after being in levels 3 or 4
                 if sunny_season == True:
-                    if door_open == False: # Set all blinds to venetian state if both doors are closed
+                    # Set all blinds to venetian state if both doors are closed and a level 4 blind change was undertaken earlier than the persist time
+                    if door_open == False and sunlight_level_4_persist_time_exceeded:
                         print_blind_change = self.all_blinds_venetian()
-                    else: # Open door blinds and set window blinds to venetian state if at least one door is open
+                    else: # Open door blinds if at least one door is open
                         self.move_blind('All Doors', 'up')
-                        self.move_blind('All Windows', 'down')
-                        print_blind_change = True
-                        # Set blind status
-                        self.window_blind_config['status']['All Windows'] = 'Venetian'
-                        self.window_blind_config['status']['Left Window'] = 'Venetian'
-                        self.window_blind_config['status']['Right Window'] = 'Venetian'
                         self.window_blind_config['status']['All Doors'] = 'Open'
                         self.window_blind_config['status']['Left Door'] = 'Open'
                         self.window_blind_config['status']['Right Door'] = 'Open'
-                        self.window_blind_config['status']['All Blinds'] = 'Venetian'
-                else: # Open all blinds if not sunny_season
-                    print_blind_change = self.raise_all_blinds()
+                        # Set window blinds to venetian state if at least one door is open and a level 4 blind change was undertaken earlier than the persist time
+                        if sunlight_level_4_persist_time_exceeded:
+                            self.move_blind('All Windows', 'down')
+                            self.window_blind_config['status']['All Windows'] = 'Venetian'
+                            self.window_blind_config['status']['Left Window'] = 'Venetian'
+                            self.window_blind_config['status']['Right Window'] = 'Venetian'
+                            self.window_blind_config['status']['All Blinds'] = 'Venetian'
+                        print_blind_change = True              
+                else: # Open all blinds if not sunny_season and a level 4 blind change was undertaken earlier than the persist time
+                    if sunlight_level_4_persist_time_exceeded:
+                        print_blind_change = self.raise_all_blinds()
         else:
             #print('No Blind Change. Auto Blind Control is overridden')
             pass
-        return(print_blind_change)
+        return(print_blind_change, sunlight_level_4_persist_time_exceeded)
 
     def set_blind_sunlight_1(self, door_open, auto_override, current_blind_temp_threshold, current_temperature):
         print('High Sunlight Level 1 Invoked')
