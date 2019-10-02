@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.6 Gen
+#Northcliff Home Manager - 8.7 Gen
 # Requires minimum Doorbell V2.5, HMDisplay V3.8, Aircon V3.47
 
 import paho.mqtt.client as mqtt
@@ -2002,6 +2002,10 @@ class WindowBlindClass(object):
                         self.window_blind_config['status']['All Windows'] = 'Venetian'
                         self.window_blind_config['status']['Left Window'] = 'Venetian'
                         self.window_blind_config['status']['Right Window'] = 'Venetian'
+                        self.move_blind('All Doors', 'up')
+                        self.window_blind_config['status']['All Doors'] = 'Open'
+                        self.window_blind_config['status']['Left Door'] = 'Open'
+                        self.window_blind_config['status']['Right Door'] = 'Open'
                         print_blind_change = True
                         blind_sunlight_position = 2
                     # Open door blinds if a door has just been opened, even if the persist has not been exceeded
