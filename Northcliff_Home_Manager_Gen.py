@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.7 Gen
+#Northcliff Home Manager - 8.8 Gen
 # Requires minimum Doorbell V2.5, HMDisplay V3.8, Aircon V3.47
 
 import paho.mqtt.client as mqtt
@@ -35,7 +35,7 @@ class NorthcliffHomeManagerClass(object):
         # Name each powerpoint and map to its device id
         self.powerpoint_names_device_id = {'Living': 646, 'South Balcony': 626, 'North Balcony': 647}
         # List the flood sensors
-        self.flood_sensor_names = ['Kitchen', 'Laundry']
+        self.flood_sensor_names = ['Kitchen', 'Aquarium']
         # Name each light dimmer and map to its device id
         self.light_dimmer_names_device_id = {'Lounge Light': 323, 'TV Light': 325, 'Dining Light': 324, 'Study Light': 648, 'Kitchen Light': 504, 'Hallway Light': 328, 'North Light': 463,
                                               'South Light': 475, 'Main Light': 451, 'North Balcony Light': 517, 'South Balcony Light': 518, 'Window Light': 721}
