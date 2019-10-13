@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.8 Gen
+#Northcliff Home Manager - 8.9 Gen
 # Requires minimum Doorbell V2.5, HMDisplay V3.8, Aircon V3.47
 
 import paho.mqtt.client as mqtt
@@ -539,9 +539,7 @@ class HomebridgeClass(object):
         characteristic = parsed_json['characteristic']
         value = parsed_json['value']
         if characteristic == 'Active':
-            if value == 1:
-                air_purifier[purifier_name].active()
-            else:
+            if value == 0:
                 air_purifier[purifier_name].inactive()
         elif characteristic == 'TargetAirPurifierState':
             if value == 0:
@@ -3025,32 +3023,17 @@ class BlueAirClass(object):
         air_purifier_settings = self.get_device_settings()
         if air_purifier_settings != 'BlueAir Comms Error': # Capture new settings is there's valid data, otherwise, keep previous settings
             #print('Capturing Air Purifier Settings for', self.name)
-            if self.auto == True: # Auto BlueAir units have mode and fan speed in different list locations from manual units
-                if (type(air_purifier_settings) is list) and (len(air_purifier_settings) > 9):
-                    self.current_air_purifier_settings['LED Brightness'] = air_purifier_settings[1]['currentValue']
-                    self.current_air_purifier_settings['Child Lock'] = air_purifier_settings[2]['currentValue']
-                    self.current_air_purifier_settings['Fan Speed'] = air_purifier_settings[5]['currentValue']
-                    self.current_air_purifier_settings['Filter Status'] = air_purifier_settings[8]['currentValue']
-                    self.current_air_purifier_settings['Mode'] = air_purifier_settings[9]['currentValue']
-                    valid_data = True
-                else:
-                    valid_data = False
-            else:
-                if (type(air_purifier_settings) is list) and (len(air_purifier_settings)) > 6:
-                    self.current_air_purifier_settings['LED Brightness'] = air_purifier_settings[1]['currentValue']
-                    self.current_air_purifier_settings['Child Lock'] = air_purifier_settings[2]['currentValue']
-                    self.current_air_purifier_settings['Fan Speed'] = air_purifier_settings[3]['currentValue']
-                    self.current_air_purifier_settings['Filter Status'] = air_purifier_settings[5]['currentValue']
-                    self.current_air_purifier_settings['Mode'] = air_purifier_settings[6]['currentValue']
-                    valid_data = True
-                else:
-                    valid_data = False
-            if valid_data == True:
+            if (type(air_purifier_settings) is list) and (len(air_purifier_settings) > 9):
+                self.current_air_purifier_settings['LED Brightness'] = air_purifier_settings[1]['currentValue']
+                self.current_air_purifier_settings['Child Lock'] = air_purifier_settings[2]['currentValue']
+                self.current_air_purifier_settings['Fan Speed'] = air_purifier_settings[5]['currentValue']
+                self.current_air_purifier_settings['Filter Status'] = air_purifier_settings[8]['currentValue']
+                self.current_air_purifier_settings['Mode'] = air_purifier_settings[9]['currentValue']
                 for setting in self.previous_air_purifier_settings:
                     if self.previous_air_purifier_settings[setting] != self.current_air_purifier_settings[setting]:
                         self.settings_changed = True
-                        #mgr.print_update(self.name + ' Air Purifier ' + setting + ' setting changed from ' + self.previous_air_purifier_settings[setting] + ' to ' +
-                                         #self.current_air_purifier_settings[setting] + ' on ')
+                        mgr.print_update(self.name + ' Air Purifier ' + setting + ' setting changed from ' + self.previous_air_purifier_settings[setting] + ' to ' +
+                                         self.current_air_purifier_settings[setting] + ' on ')
                         self.previous_air_purifier_settings[setting] = self.current_air_purifier_settings[setting]
             else:
                 mgr.print_update('Air Purifier Settings Data Format Error for ' + self.name + ' on ')
@@ -3060,10 +3043,6 @@ class BlueAirClass(object):
         return (self.settings_changed, self.settings_update_time, self.current_air_purifier_settings['Mode'],
                 self.current_air_purifier_settings['Fan Speed'], self.current_air_purifier_settings['Child Lock'],
                 self.current_air_purifier_settings['LED Brightness'], self.current_air_purifier_settings['Filter Status'])
-
-    def active(self):
-        if self.auto == False:
-            self.set_fan_speed('1')
             
     def inactive(self):
         self.set_fan_speed('0')
@@ -3085,6 +3064,8 @@ class BlueAirClass(object):
             uuid = self.device.uuid
             body = {"currentValue": "auto", "scope": "device", "defaultValue": "auto", "name": "mode", "uuid": uuid}
             response = self.session.post(url, headers=header, json=body)
+        else: # Set Fan Speed to 1 of it's a manual air purifier
+            self.set_fan_speed('1')
 
     def set_fan_speed(self, fan_speed):
         #print('Setting Fan Speed to', fan_speed, 'for the', self.device.name + 'Air Purifier')
