@@ -75,6 +75,9 @@ The Home Manager monitors and controls BlueAir air purifiers to capture air qual
 ### BlueAir Air Purifier Apple Home App Screenshot
 ![BlueAir Screenshot](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/IMG_4349.png)
 
+## Seneye Aquarium Sensor Readings
+The Home Manager monitors a Seneye Aquarium Sensor to monitor ph, NH3 and Temperature Levels via the Seneye API. The readings are then sent via mqtt messages to be recorded and displayed in Domoticz.
+
 ## License
 This project is licensed under the MIT License - see the LICENSE.md file for details
 
