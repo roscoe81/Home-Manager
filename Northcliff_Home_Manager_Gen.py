@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.13 Gen
-# Requires minimum Doorbell V2.5, HMDisplay V3.8, Aircon V3.47
+#Northcliff Home Manager - 8.17_Gen
+# Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47
 
 import paho.mqtt.client as mqtt
 import struct
@@ -249,6 +249,8 @@ class NorthcliffHomeManagerClass(object):
             # Initialise Garage Door state
             homebridge.update_garage_door('Closing')
             homebridge.update_garage_door('Closed')
+            previous_aquarium_capture_time = 0 # Initialise aquarium sensor capture time
+            previous_aquarium_reading_time = 0 # Initialise aquarium sensor reading time
             while True: # The main Home Manager Loop
                 for aircon_name in mgr.aircon_config:
                 	aircon[aircon_name].control_aircon() # For each aircon, call the method that controls the aircon.
@@ -285,12 +287,23 @@ class NorthcliffHomeManagerClass(object):
                         settings_changed, self.purifier_settings_update_time, mode, fan_speed, child_lock, led_brightness, filter_status = air_purifier[name].capture_settings()
                         if settings_changed == True: # Only update Homebridge if a setting has changed (To minimise mqtt traffic)
                             homebridge.set_air_purifier_state(name, mode, fan_speed, child_lock, led_brightness, filter_status)
-                            if self.air_purifier_names[name]['Auto'] == True: # Change maunal air purifier fan speeds if there's a change in the auto air purifier fan speed during linking hours
+                            if self.air_purifier_names[name]['Auto'] == True: # Change manual air purifier fan speeds if there's a change in the auto air purifier fan speed during linking hours
                                 if self.universal_air_purifier_fan_speed != fan_speed:
                                     self.universal_air_purifier_fan_speed = fan_speed
                                     if self.air_purifier_linking_hour() == True:
                                         self.update_manual_air_purifier_fan_speeds(name, fan_speed)
-                  
+                if time.time() - previous_aquarium_capture_time > 600: # Capture aquarium reading every 10 minutes
+                    print('Aquarium Capture Time:', datetime.fromtimestamp(time.time()).strftime('%A %d %B %Y @ %H:%M:%S'))
+                    valid_aquarium_reading, message, ph, temp, nh3, reading_time =  aquarium_sensor.latest() # Capture Seneye device readings
+                    if message == 'Seneye Comms Good': #If there were no Seneye comms errors
+                        if reading_time > previous_aquarium_reading_time: # Only update Domoticz if there is a new reading
+                            print('Aquarium Reading Time:', datetime.fromtimestamp(reading_time).strftime('%A %d %B %Y @ %H:%M:%S'), 'ph:', ph, 'nh3:', nh3, 'Temp:', temp)
+                            if valid_aquarium_reading:
+                                domoticz.update_aquarium(ph, temp, nh3)
+                            previous_aquarium_reading_time = reading_time
+                    else:
+                        print('Seneye Message Ignored: Comms Error') # Ignore bad Seneye comms messages
+                    previous_aquarium_capture_time = time.time()
         except KeyboardInterrupt:
             self.shutdown('Keyboard Interrupt')
 
@@ -384,7 +397,7 @@ class HomebridgeClass(object):
             self.process_blind_button(parsed_json)
         elif self.doorbell_format['name'] in parsed_json['name']: # If it's a doorbell button
             self.process_doorbell_button(parsed_json)
-        elif parsed_json['name'] == self.powerpoint_format['name']: # If it's a powerpoint button
+        elif self.powerpoint_format['name'] in parsed_json['name']: # If it's a powerpoint button
             self.switch_powerpoint(parsed_json)
         elif parsed_json['name'] == self.garage_door_format['name']: # If it's a garage door button
             self.process_garage_door_button(parsed_json)
@@ -1285,8 +1298,23 @@ class DomoticzClass(object): # Manages communications to and from the z-wave obj
             domoticz_json = {}
             domoticz_json['idx'] = self.air_quality_idx_map[name]['co2']
             domoticz_json['nvalue'] = co2
-            client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))    
+            client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
 
+    def update_aquarium(self, ph, temp, nh3):
+        domoticz_json = {}
+        print('Updating Domoticz Aquarium')
+        domoticz_json['idx'] = 769
+        domoticz_json['nvalue'] = 0
+        domoticz_json['svalue'] = ph
+        client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
+        domoticz_json['idx'] = 770
+        domoticz_json['nvalue'] = 0
+        domoticz_json['svalue'] = nh3
+        client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
+        domoticz_json['idx'] = 772
+        domoticz_json['nvalue'] = 0
+        domoticz_json['svalue'] = temp
+        client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
 
 class FloodSensorClass(object): 
     def __init__(self, name):        
@@ -2187,7 +2215,7 @@ class WindowBlindClass(object):
         for blind_button in self.window_blind_config['status']:
             self.window_blind_config['status'][blind_button] = 'Venetian'        
         return self.venetian_door_impacting_blind('All Blinds')
-               
+                  
     def check_door_state_while_closing(self, delay): # Checks if a door has been opened while a door blind is closing and reverses the blind closure if the door has been opened
         loop = True
         count = 0
@@ -2346,6 +2374,7 @@ class AirconClass(object):
                         self.thermostat_status[thermostat_name]['Mode'] = setting
                         self.thermostat_status[thermostat_name]['Active'] = self.thermostat_mode_active_map[setting]
                         self.send_aircon_command('Thermostat Heat')
+                        self.settings['previous_aircon_mode_command'] = 'Off'
                     else:
                         print('Trying to start aircon without any sensor active. Command ignored')
                         homebridge.reset_aircon_control_thermostat(self.name) # Set homebridge aircon control thermostat back to Off
@@ -2360,6 +2389,7 @@ class AirconClass(object):
                         self.thermostat_status[thermostat_name]['Mode'] = setting
                         self.thermostat_status[thermostat_name]['Active'] = self.thermostat_mode_active_map[setting]
                         self.send_aircon_command('Thermostat Cool')
+                        self.settings['previous_aircon_mode_command'] = 'Off'
                     else:
                         print('Trying to start aircon without any sensor active. Command ignored')
                         homebridge.reset_aircon_control_thermostat(self.name) # Set homebridge aircon control thermostat back to Off
@@ -3003,7 +3033,7 @@ class FoobotDevice:
         except requests.exceptions.Timeout as blueair_comms_error:
             print('BlueAir Latest Readings Timeout Error', blueair_comms_error)
             return ('BlueAir Comms Error')
-        except requests.RequestException as blueair_comms_error:
+        except requests.exceptions.RequestException as blueair_comms_error:
             print('BlueAir Latest Readings Request Error', blueair_comms_error)
             return ('BlueAir Comms Error')
         except ValueError as blueair_comms_error:
@@ -3062,7 +3092,6 @@ class BlueAirClass(object):
             return(self.readings_update_time, self.air_readings['part_2_5'], self.air_readings['co2'], self.air_readings['voc'], self.max_aqi, self.max_co2, self.co2_threshold, self.part_2_5_threshold)
         else:
             pass
-
 
     def capture_settings(self): # Capture device settings
         self.settings_update_time = time.time()
@@ -3151,12 +3180,75 @@ class BlueAirClass(object):
         except requests.exceptions.Timeout as blueair_comms_error:
             print('BlueAir Settings Timeout Error', blueair_comms_error)
             return ('BlueAir Comms Error')
-        except requests.RequestException as blueair_comms_error:
+        except requests.exceptions.RequestException as blueair_comms_error:
             print('BlueAir Settings Request Error', blueair_comms_error)
             return ('BlueAir Comms Error')
         except ValueError as blueair_comms_error:
             print('BlueAir Settings Value Error', blueair_comms_error)
             return ('BlueAir Comms Error')
+
+class SeneyeClass:
+    def __init__(self, username, password):   
+        """Authenticate the username and password."""
+        self.username = username
+        self.password = password
+        self.session = requests.Session()
+        self.BASE_URL = 'https://api.seneye.com/v1'
+
+    def devices(self):
+        """Get list of Seneye devices owned by logged in user."""
+        url = '{base}/devices?user={user}&pwd={password}'.format(base=self.BASE_URL,
+                                                   user=self.username,password=self.password)
+        req = self.session.get(url)
+        return req.json()
+    
+    def latest(self):
+        """Get latest sample from Seneye device."""
+        url = '{base}/devices/?IncludeState=1&user={user}&pwd={password}'
+        url = url.format(base=self.BASE_URL,user=self.username,password=self.password)
+        try:
+            valid_reading = True
+            readings = self.session.get(url,).json()
+            out_of_water = readings[0]['status']['out_of_water']
+            if out_of_water != "0":
+                print('Seneye Out of Water')
+                valid_reading = False
+            wrong_slide = readings[0]['status']['wrong_slide']
+            if wrong_slide != "0":
+                print('Wrong Seneye Slide')
+                valid_reading = False
+            disconnected = readings[0]['status']['disconnected']
+            if disconnected != "0":
+                print('Seneye Disconnected')
+                valid_reading = False
+            slide_expires = int(readings[0]['status']['slide_expires'])
+            if time.time() > slide_expires:
+                print('Seneye Slide Expired')
+                valid_reading = False
+            last_experiment = int(readings[0]['status']['last_experiment'])
+            if valid_reading:
+                ph = readings[0]['exps']['ph']['curr']
+                temp = readings[0]['exps']['temperature']['curr']
+                nh3 = readings[0]['exps']['nh3']['curr']
+                return valid_reading, 'Seneye Comms Good', ph, temp, nh3, last_experiment
+            else:
+                return valid_reading,'Seneye Comms Good', 0, 0, 0, 0
+        except requests.exceptions.ConnectionError as seneye_comms_error:
+            valid_reading = False
+            print('Seneye Latest Readings Connection Error', seneye_comms_error)
+            return valid_reading,'Seneye Comms Error', 0, 0, 0, 0
+        except requests.exceptions.Timeout as seneye_comms_error:
+            valid_reading = False
+            print('Seneye Latest Readings Timeout Error', seneye_comms_error)
+            return valid_reading,'Seneye Comms Error', 0, 0, 0, 0
+        except requests.exceptions.RequestException as seneye_comms_error:
+            valid_reading = False
+            print('Seneye Latest Readings Request Error', seneye_comms_error)
+            return valid_reading,'Seneye Comms Error', 0, 0, 0, 0
+        except ValueError as seneye_comms_error:
+            valid_reading = False
+            print('Seneye Latest Readings Value Error', seneye_comms_error)
+            return valid_reading,'Seneye Comms Error', 0, 0, 0, 0
         
 if __name__ == '__main__': # This is where to overall code kicks off
     # Create a Home Manager instance
@@ -3191,6 +3283,8 @@ if __name__ == '__main__': # This is where to overall code kicks off
     air_purifier_devices = fb.devices() # Capture foobot device data
     # Use a dictionary comprehension to create an air purifier instance for each air purifier
     air_purifier = {name: BlueAirClass(name, air_purifier_devices, mgr.air_purifier_names[name]) for name in mgr.air_purifier_names}
+    # Creat a Seneye Aquarium Sensor Instance
+    aquarium_sensor = SeneyeClass("<seneye_user_name>", "<seneye_user_password>")
     # Create and set up an mqtt instance                             
     client = mqtt.Client('home_manager')
     client.on_connect = mgr.on_connect
