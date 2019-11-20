@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.17_Gen
+#Northcliff Home Manager - 8.18 Gen
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47
 
 import paho.mqtt.client as mqtt
@@ -119,6 +119,13 @@ class NorthcliffHomeManagerClass(object):
         # Sets up the mqtt subscriptions. Subscribing in on_connect() means that if we lose the connection and reconnect then subscriptions will be renewed.
         self.print_update('Northcliff Home Manager Connected with result code '+str(rc)+' on ')
         print('') 
+        time.sleep(1)
+        client.subscribe(self.homebridge_incoming_mqtt_topic) # Subscribe to Homebridge for interworking with Apple Home
+        client.subscribe(self.domoticz_incoming_mqtt_topic) # Subscribe to Domoticz for access to its devices
+        client.subscribe(self.doorbell_incoming_mqtt_topic) # Subscribe to the Doorbell Monitor
+        client.subscribe(self.garage_door_incoming_mqtt_topic) # Subscribe to the Garage Door Controller
+        for aircon_name in self.aircon_config: # Subscribe to the Aircon Controllers
+            client.subscribe(self.aircon_config[aircon_name]['mqtt Topics']['Incoming'])
     
     def on_message(self, client, userdata, msg):
         # Calls the relevant methods for the Home Manager, based on the mqtt publish messages received from the doorbell monitor, the homebridge buttons,
@@ -3292,11 +3299,4 @@ if __name__ == '__main__': # This is where to overall code kicks off
     client.connect("<mqtt broker name>", 1883, 60)
     # Blocking call that processes network traffic, dispatches callbacks and handles reconnecting.
     client.loop_start()
-    client.subscribe(mgr.homebridge_incoming_mqtt_topic) # Subscribe to Homebridge for interworking with Apple Home
-    client.subscribe(mgr.domoticz_incoming_mqtt_topic) # Subscribe to Domoticz for access to its devices
-    client.subscribe(mgr.doorbell_incoming_mqtt_topic) # Subscribe to the Doorbell Monitor
-    client.subscribe(mgr.garage_door_incoming_mqtt_topic) # Subscribe to the Garage Door Controller
-    for aircon_name in mgr.aircon_config: # Subscribe to the Aircon Controllers
-        client.subscribe(mgr.aircon_config[aircon_name]['mqtt Topics']['Incoming'])
-    time.sleep(1)
     mgr.run()
