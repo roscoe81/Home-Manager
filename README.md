@@ -59,7 +59,7 @@ This [Garage Door Opener](https://github.com/roscoe81/Garage-Door-Opener) is a s
 
 ## Window Blind Control
 Control of window blinds is enabled via a Somfy myLink Interface. Each blind can be manually adjusted via the Apple Home App to one of three positions (closed, open or venetian). Home Manager also provides the capability to:
-* Link the blind control to an external light sensor and temperature sensor so that the blinds will automatically adjust to external light and temperature levels. That automatic mode can be manually over-ridden from the Appkle Home App.
+* Link the blind control to an external light sensor and temperature sensor so that the blinds will automatically adjust to external light and temperature levels. That automatic mode can be manually over-ridden from the Apple HomeKit App.
 * Link the blind control to door states so that any blinds covering doors cannot be closed if the door is open.
 
 ### Window Blind Control Apple Home App Screenshot
