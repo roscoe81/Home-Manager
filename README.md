@@ -1,5 +1,5 @@
 # Home Manager
-This is a Raspberry Pi based Home Automation Manager. It utilises mosquitto, Homebridge, Homebridge-mqtt, Domoticz and the projects contained in my other GitHub repositories to automate airconditioning, doorbell, lighting, power outlets, flood sensors, door sensors, window blinds and a garage door opener.
+This is a Raspberry Pi based Home Automation Manager. It utilises mosquitto, Homebridge, Homebridge-mqtt, Domoticz, the Apple HomeKit app and the projects contained in my other GitHub repositories to automate a Mitsubishi ducted air conditioner, a Fermax Door Intercom, z-wave lighting/power outlets/flood sensors/door sensors, Somfy window blinds, a garage door opener, BlueAir air purifiers and a Seneye aquarium sensor.
 
 ## System Overview
 ![System Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20System%20Overview.png)
@@ -59,7 +59,7 @@ This [Garage Door Opener](https://github.com/roscoe81/Garage-Door-Opener) is a s
 
 ## Window Blind Control
 Control of window blinds is enabled via a Somfy myLink Interface. Each blind can be manually adjusted via the Apple Home App to one of three positions (closed, open or venetian). Home Manager also provides the capability to:
-* Link the blind control to an external light sensor and temperature sensor so that the blinds will automatically adjust to external light and temperature levels. That automatic mode can be manually over-ridden from the Appkle Home App.
+* Link the blind control to an external light sensor and temperature sensor so that the blinds will automatically adjust to external light and temperature levels. That automatic mode can be manually over-ridden from the Apple HomeKit App.
 * Link the blind control to door states so that any blinds covering doors cannot be closed if the door is open.
 
 ### Window Blind Control Apple Home App Screenshot
