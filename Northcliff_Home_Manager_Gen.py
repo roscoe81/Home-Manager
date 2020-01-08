@@ -1,7 +1,6 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.18a Gen
+#Northcliff Home Manager - 8.22 Gen
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47
-
 import paho.mqtt.client as mqtt
 import struct
 import time
@@ -13,22 +12,20 @@ import requests
 import os
 
 class NorthcliffHomeManagerClass(object):
-    def __init__(self, log_aircon_cost_data, log_aircon_damper_data, log_aircon_temp_data, load_previous_aircon_effectiveness):
+    def __init__(self, log_aircon_cost_data, log_aircon_damper_data, log_aircon_temp_data, load_previous_aircon_effectiveness, perform_homebridge_config_check):
         #print ('Instantiated Home Manager')
         self.log_aircon_cost_data = log_aircon_cost_data # Flags if the aircon cost data is to be logged
         self.log_aircon_damper_data = log_aircon_damper_data # Flags if the aircon damper data is to be logged
         self.log_aircon_temp_data = log_aircon_temp_data # Flags if the aircon temperature data is to be logged
         self.load_previous_aircon_effectiveness = load_previous_aircon_effectiveness # Flags if the aircon data is to be loaded on startup
+        self.perform_homebridge_config_check = perform_homebridge_config_check # Flags that a homebridge config check is to be performed on start-up
         self.home_manager_file_name = '<Your Home Manager File Path and Name>'
         self.key_state_log_file_name = '<Your Key State Log File Path and Name>'
-        # Set up property data
-        # List the rooms under management
-        self.property_rooms = ['Lounge', 'Living', 'TV', 'Dining', 'Study', 'Kitchen', 'Hallway', 'North', 'South', 'Main', 'Rear Balcony', 'North Balcony', 'South Balcony']
         # List the multisensor names
         self.multisensor_names = ['Living', 'Study', 'Kitchen', 'North', 'South', 'Main', 'Rear Balcony', 'North Balcony', 'South Balcony']
         # List the outdoor sensors
-        self.outdoor_zone = ['Rear Balcony', 'North Balcony', 'South Balcony']
-        # Group outdoor sensors in one homebridge "room" name for passing to the homebridge object
+        self.outdoor_multisensor_names = ['Rear Balcony', 'North Balcony', 'South Balcony']
+        # Group outdoor sensors as services under one homebridge accessory name for passing to the homebridge object
         self.outdoor_sensors_homebridge_name = 'Balconies'
         # Name each door sensor and identify the room that contains that door sensor
         self.door_sensor_names_locations = {'North Living Room': 'Living Room', 'South Living Room': 'Living Room', 'Entry': 'Entry'}
@@ -38,7 +35,8 @@ class NorthcliffHomeManagerClass(object):
         self.flood_sensor_names = ['Kitchen', 'Aquarium']
         # Name each light dimmer and map to its device id
         self.light_dimmer_names_device_id = {'Lounge Light': 323, 'TV Light': 325, 'Dining Light': 324, 'Study Light': 648, 'Kitchen Light': 504, 'Hallway Light': 328, 'North Light': 463,
-                                              'South Light': 475, 'Main Light': 451, 'North Balcony Light': 517, 'South Balcony Light': 518, 'Window Light': 721}
+                                              'South Light': 475, 'Main Light': 451, 'North Balcony Light': 517, 'South Balcony Light': 518}
+        self.colour_light_dimmer_names = [] # Dimmers in self.light_dimmer_names_device_id that require hue and saturation characteristics
         # Set up the config for each aircon, including their mqtt topics
         self.aircon_config = {'Aircon': {'mqtt Topics': {'Outgoing':'AirconControl', 'Incoming': 'AirconStatus'}, 'Day Zone': ['Living', 'Study', 'Kitchen'],
                                          'Night Zone': ['North', 'South', 'Main'], 'Master': 'Master', 'Outdoor Temp Sensor': 'North Balcony', 'Cost Log': '<Your Cost Log File Path and Name>',
@@ -57,13 +55,10 @@ class NorthcliffHomeManagerClass(object):
         #print('Aircon sensor name aircon map', self.aircon_sensor_name_aircon_map)
         # Set up other mqtt topics
         self.homebridge_incoming_mqtt_topic = 'homebridge/from/set'
-        self.homebridge_outgoing_mqtt_topic = 'homebridge/to/set'
+        self.homebridge_incoming_config_mqtt_topic = 'homebridge/from/response'
         self.domoticz_incoming_mqtt_topic = 'domoticz/out'
-        self.domoticz_outgoing_mqtt_topic = 'domoticz/in'
         self.doorbell_incoming_mqtt_topic = 'DoorbellStatus'
-        self.doorbell_outgoing_mqtt_topic = 'DoorbellButton'
         self.garage_door_incoming_mqtt_topic = 'GarageStatus'
-        self.garage_door_outgoing_mqtt_topic = 'GarageControl'  
         # Set up the config for each window blind
         self.window_blind_config = {'Living Room Blinds': {'blind host name': '<mylink host name>', 'blind port': 44100, 'light sensor': 'South Balcony',
                                                             'temp sensor': 'North Balcony', 'sunlight threshold 0': 100,'sunlight threshold 1': 1000,
@@ -104,23 +99,28 @@ class NorthcliffHomeManagerClass(object):
         self.call_room_sunlight_control = {'State': False, 'Blind': '', 'Light Level': 100}
         # When True, flags that a blind-impacting door has been opened, referencing the relevant blind
         self.blind_control_door_changed = {'State': False, 'Blind': '', 'Changed': False}
+        self.doorbell_present = True # Enables doorbell control
         # Identify the door that controls the doorbell "Auto Possible" mode
         self.doorbell_door = 'Entry'
+        self.air_purifier_present = True # Enables air purifier control
         # Set up air purifier dictionary with names, foobot device numbers and auto/manual flag.
         self.air_purifier_names = {'Living': {'Foobot Device': 1, 'Auto': True}, 'Main': {'Foobot Device': 0, 'Auto': False}}
         self.auto_air_purifier_names = []
         for name in self.air_purifier_names:
-            if self.air_purifier_names[name]['Auto'] == True:
+            if self.air_purifier_names[name]['Auto']:
                 self.auto_air_purifier_names.append(name)
         self.universal_air_purifier_fan_speed = 1
         self.air_purifier_linking_times = {'Start': 9, 'Stop': 20}
+        self.garage_door_present = True # Enables garage door control
+        self.aquarium_present = True # Enables aquarium monitoring
                                
     def on_connect(self, client, userdata, flags, rc):
         # Sets up the mqtt subscriptions. Subscribing in on_connect() means that if we lose the connection and reconnect then subscriptions will be renewed.
         self.print_update('Northcliff Home Manager Connected with result code '+str(rc)+' on ')
-        print('') 
+        print('')
         time.sleep(1)
-        client.subscribe(self.homebridge_incoming_mqtt_topic) # Subscribe to Homebridge for interworking with Apple Home
+        client.subscribe(self.homebridge_incoming_mqtt_topic) #Subscribe to Homebridge status for interworking with Apple Home
+        client.subscribe(self.homebridge_incoming_config_mqtt_topic) #Subscribe to Homebridge config for interworking with Apple Home
         client.subscribe(self.domoticz_incoming_mqtt_topic) # Subscribe to Domoticz for access to its devices
         client.subscribe(self.doorbell_incoming_mqtt_topic) # Subscribe to the Doorbell Monitor
         client.subscribe(self.garage_door_incoming_mqtt_topic) # Subscribe to the Garage Door Controller
@@ -132,8 +132,11 @@ class NorthcliffHomeManagerClass(object):
         # Domoticz, the aircon controller and the garage door controller
         decoded_payload = str(msg.payload.decode("utf-8"))
         parsed_json = json.loads(decoded_payload)
-        if msg.topic == self.homebridge_incoming_mqtt_topic: # If coming from homebridge
+        #print(msg.topic, parsed_json)
+        if msg.topic == self.homebridge_incoming_mqtt_topic: # If it's a homebridge status message
             homebridge.capture_homebridge_buttons(parsed_json) # Capture the homebridge button
+        elif msg.topic == self.homebridge_incoming_config_mqtt_topic: # If it's a homebridge config message
+            homebridge.config_response(parsed_json) # Handle homebridge config responses
         elif msg.topic == self.domoticz_incoming_mqtt_topic: # If coming from domoticz
             domoticz.process_device_data(parsed_json) # Process the domoticz device data
         elif msg.topic == self.garage_door_incoming_mqtt_topic: # If coming from the Garage Door Controller
@@ -181,7 +184,7 @@ class NorthcliffHomeManagerClass(object):
             door_sensor[name].current_door_opened = parsed_key_states['Door State'][name]
             door_sensor[name].previous_door_opened = parsed_key_states['Door State'][name]
             homebridge.update_door_state(name, self.door_sensor_names_locations[name], parsed_key_states['Door State'][name], False)
-            if door_sensor[name].doorbell_door == True:
+            if door_sensor[name].doorbell_door:
                 doorbell.update_doorbell_door_state(self.doorbell_door, parsed_key_states['Door State'][name])
         for blind in parsed_key_states['Blind Status']:
             window_blind[blind].window_blind_config['status'] = parsed_key_states['Blind Status'][blind]
@@ -218,7 +221,7 @@ class NorthcliffHomeManagerClass(object):
 
     def update_manual_air_purifier_fan_speeds(self, control_purifier, fan_speed):
         for name in self.air_purifier_names:
-            if self.air_purifier_names[name]['Auto'] == False:
+            if not self.air_purifier_names[name]['Auto']:
                 print('Setting', name, 'Fan Speed to', fan_speed, 'due to change in', control_purifier, 'auto air purifier fan change')
                 air_purifier[name].set_fan_speed(str(fan_speed))
                 
@@ -229,15 +232,17 @@ class NorthcliffHomeManagerClass(object):
             aircon[aircon_name].shut_down()
         client.loop_stop() # Stop mqtt monitoring
         self.print_update('Home Manager Shut Down due to ' + reason + ' on ')
-            
+      
     def run(self): # The main Home Manager start-up, loop and shut-down code                          
         try:
+            if self.perform_homebridge_config_check:
+                homebridge.check_and_fix_config() 
             # Retrieve logged key states
             self.retrieve_key_states()
             homebridge.reset_reboot_button()
             # Capture Air Purifier readings and settings on startup and update homebridge
             for name in self.air_purifier_names:
-                if self.air_purifier_names[name]['Auto'] == True: # Readings only come from auto units
+                if self.air_purifier_names[name]['Auto']: # Readings only come from auto units
                     self.purifier_readings_update_time, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold, part_2_5_threshold = air_purifier[name].capture_readings()
                     homebridge.update_air_quality(name, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold, part_2_5_threshold)
                     domoticz.update_air_quality(name, part_2_5, co2, voc, max_aqi)
@@ -246,7 +251,8 @@ class NorthcliffHomeManagerClass(object):
             # Start up Aircons
             for aircon_name in mgr.aircon_config:
                 aircon[aircon_name].start_up(self.load_previous_aircon_effectiveness)
-            doorbell.update_doorbell_status() # Get doorbell status on startup
+            if self.doorbell_present:
+                doorbell.update_doorbell_status() # Get doorbell status on startup
             # Initialise multisensor readings on homebridge to start-up settings
             for name in self.multisensor_names:    
                 homebridge.update_temperature(name, multisensor[name].sensor_types_with_value['Temperature'])
@@ -254,110 +260,121 @@ class NorthcliffHomeManagerClass(object):
                 homebridge.update_light_level(name, multisensor[name].sensor_types_with_value['Light Level'])
                 homebridge.update_motion(name, multisensor[name].sensor_types_with_value['Motion'])
             # Initialise Garage Door state
-            homebridge.update_garage_door('Closing')
-            homebridge.update_garage_door('Closed')
+            if self.garage_door_present:
+                homebridge.update_garage_door('Closing')
+                homebridge.update_garage_door('Closed')
             previous_aquarium_capture_time = 0 # Initialise aquarium sensor capture time
             previous_aquarium_reading_time = 0 # Initialise aquarium sensor reading time
             while True: # The main Home Manager Loop
                 for aircon_name in mgr.aircon_config:
-                	aircon[aircon_name].control_aircon() # For each aircon, call the method that controls the aircon.
+                    aircon[aircon_name].control_aircon() # For each aircon, call the method that controls the aircon.
                 # The following tests and method calls are here in the main code loop, rather than the on_message method to avoid time.sleep calls in the window blind object delaying incoming mqtt message handling
-                if self.call_room_sunlight_control['State'] == True: # If there's a new reading from the blind control light sensor
+                if self.call_room_sunlight_control['State']: # If there's a new reading from the blind control light sensor
                     blind = self.call_room_sunlight_control['Blind'] # Identify the blind
                     light_level = self.call_room_sunlight_control['Light Level'] # Capture the light level
                     window_blind[blind].room_sunlight_control(light_level) # Call the blind's sunlight control method, passing the light level
                     self.call_room_sunlight_control['State'] = False # Reset this flag because any light level update has now been actioned
-                if self.blind_control_door_changed['Changed'] == True: # If a blind control door has changed state
+                if self.blind_control_door_changed['Changed']: # If a blind control door has changed state
                     blind = self.blind_control_door_changed['Blind'] # Identify the blind that is controlled by the door
                     light_level = self.call_room_sunlight_control['Light Level'] # Capture the light level
                     window_blind[blind].room_sunlight_control(light_level) # Call the blind's sunlight control method, passing the light level
                     self.blind_control_door_changed['Changed'] = False # Reset Door Changed Flag because any change of door state has now been actioned
-                if self.auto_blind_override_changed['Changed'] == True: # If a blind auto override button has changed state
+                if self.auto_blind_override_changed['Changed']: # If a blind auto override button has changed state
                     blind = self.auto_blind_override_changed['Blind'] # Identify the blind that is controlled by the button
                     light_level = self.call_room_sunlight_control['Light Level'] # Capture the light level
                     window_blind[blind].room_sunlight_control(light_level) # Call the blind's sunlight control method, passing the light level
                     self.auto_blind_override_changed['Changed'] = False # Reset Auto Override Flag because any change of override state has now been actioned
-                if self.call_control_blinds['State'] == True: # If a manual blind change has been invoked
+                if self.call_control_blinds['State']: # If a manual blind change has been invoked
                     blind = self.call_control_blinds['Blind'] # Identify the blind that has been changed
                     window_blind[blind].control_blinds(blind, self.call_control_blinds) # Call the blind's manual control method
                     self.call_control_blinds['State'] = False # Reset Control Blinds Flag because any control blind request has now been actioned
-                purifier_readings_check_time = time.time()
-                if (purifier_readings_check_time - self.purifier_readings_update_time) >= 300: # Update air purifier readings if last update was >= 5 minutes ago
-                    for name in self.air_purifier_names:
-                        if self.air_purifier_names[name]['Auto'] == True:# Readings only come from auto units
-                            self.purifier_readings_update_time, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold, part_2_5_threshold = air_purifier[name].capture_readings()
-                            homebridge.update_air_quality(name, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold, part_2_5_threshold)
-                            domoticz.update_air_quality(name, part_2_5, co2, voc, max_aqi)
-                purifier_settings_check_time = time.time()
-                if (purifier_settings_check_time - self.purifier_settings_update_time) >= 5: # Update air purifier settings if last update was >= 5 seconds ago
-                    for name in self.air_purifier_names:
-                        settings_changed, self.purifier_settings_update_time, mode, fan_speed, child_lock, led_brightness, filter_status = air_purifier[name].capture_settings()
-                        if settings_changed == True: # Only update Homebridge if a setting has changed (To minimise mqtt traffic)
-                            homebridge.set_air_purifier_state(name, mode, fan_speed, child_lock, led_brightness, filter_status)
-                            if self.air_purifier_names[name]['Auto'] == True: # Change manual air purifier fan speeds if there's a change in the auto air purifier fan speed during linking hours
-                                if self.universal_air_purifier_fan_speed != fan_speed:
-                                    self.universal_air_purifier_fan_speed = fan_speed
-                                    if self.air_purifier_linking_hour() == True:
-                                        self.update_manual_air_purifier_fan_speeds(name, fan_speed)
-                if time.time() - previous_aquarium_capture_time > 600: # Capture aquarium reading every 10 minutes
-                    print('Aquarium Capture Time:', datetime.fromtimestamp(time.time()).strftime('%A %d %B %Y @ %H:%M:%S'))
-                    valid_aquarium_reading, message, ph, temp, nh3, reading_time =  aquarium_sensor.latest() # Capture Seneye device readings
-                    if message == 'Seneye Comms Good': #If there were no Seneye comms errors
-                        if reading_time > previous_aquarium_reading_time: # Only update Domoticz if there is a new reading
-                            print('Aquarium Reading Time:', datetime.fromtimestamp(reading_time).strftime('%A %d %B %Y @ %H:%M:%S'), 'ph:', ph, 'nh3:', nh3, 'Temp:', temp)
-                            if valid_aquarium_reading:
-                                domoticz.update_aquarium(ph, temp, nh3)
-                            previous_aquarium_reading_time = reading_time
-                    else:
-                        print('Seneye Message Ignored: Comms Error') # Ignore bad Seneye comms messages
-                    previous_aquarium_capture_time = time.time()
+                if self.air_purifier_present:
+                    purifier_readings_check_time = time.time()
+                    if (purifier_readings_check_time - self.purifier_readings_update_time) >= 300: # Update air purifier readings if last update was >= 5 minutes ago
+                        for name in self.air_purifier_names:
+                            if self.air_purifier_names[name]['Auto']:# Readings only come from auto units
+                                self.purifier_readings_update_time, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold, part_2_5_threshold = air_purifier[name].capture_readings()
+                                homebridge.update_air_quality(name, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold, part_2_5_threshold)
+                                domoticz.update_air_quality(name, part_2_5, co2, voc, max_aqi)
+                    purifier_settings_check_time = time.time()
+                    if (purifier_settings_check_time - self.purifier_settings_update_time) >= 5: # Update air purifier settings if last update was >= 5 seconds ago
+                        for name in self.air_purifier_names:
+                            settings_changed, self.purifier_settings_update_time, mode, fan_speed, child_lock, led_brightness, filter_status = air_purifier[name].capture_settings()
+                            if settings_changed: # Only update Homebridge if a setting has changed (To minimise mqtt traffic)
+                                homebridge.set_air_purifier_state(name, mode, fan_speed, child_lock, led_brightness, filter_status)
+                                if self.air_purifier_names[name]['Auto']: # Change manual air purifier fan speeds if there's a change in the auto air purifier fan speed during linking hours
+                                    if self.universal_air_purifier_fan_speed != fan_speed:
+                                        self.universal_air_purifier_fan_speed = fan_speed
+                                        if self.air_purifier_linking_hour():
+                                            self.update_manual_air_purifier_fan_speeds(name, fan_speed)
+                if self.aquarium_present:
+                    if time.time() - previous_aquarium_capture_time > 600: # Capture aquarium reading every 10 minutes
+                        print('Aquarium Capture Time:', datetime.fromtimestamp(time.time()).strftime('%A %d %B %Y @ %H:%M:%S'))
+                        valid_aquarium_reading, message, ph, temp, nh3, reading_time =  aquarium_sensor.latest() # Capture Seneye device readings
+                        if message == 'Seneye Comms Good': #If there were no Seneye comms errors
+                            if reading_time > previous_aquarium_reading_time: # Only update Domoticz if there is a new reading
+                                print('Aquarium Reading Time:', datetime.fromtimestamp(reading_time).strftime('%A %d %B %Y @ %H:%M:%S'), 'ph:', ph, 'nh3:', nh3, 'Temp:', temp)
+                                if valid_aquarium_reading:
+                                    domoticz.update_aquarium(ph, temp, nh3)
+                                previous_aquarium_reading_time = reading_time
+                        else:
+                            print('Seneye Message Ignored: Comms Error') # Ignore bad Seneye comms messages
+                        previous_aquarium_capture_time = time.time()
         except KeyboardInterrupt:
             self.shutdown('Keyboard Interrupt')
 
 class HomebridgeClass(object):
-    def __init__(self, outgoing_mqtt_topic, outdoor_zone, outdoor_sensors_name, aircon_config, auto_air_purifier_names):
+    def __init__(self, outdoor_multisensor_names, outdoor_sensors_name, aircon_config, auto_air_purifier_names, window_blind_config, door_sensor_names_locations,
+                  light_dimmer_names_device_id, colour_light_dimmer_names, air_purifier_names, multisensor_names, powerpoint_names_device_id, flood_sensor_names):
         #print ('Instantiated Homebridge', self)
-        self.outgoing_mqtt_topic = outgoing_mqtt_topic
-        self.outdoor_zone = outdoor_zone
+        self.outgoing_mqtt_topic = 'homebridge/to/set'
+        self.outgoing_config_mqtt_topic = 'homebridge/to/get'
+        self.outgoing_add_accessory_mqtt_topic = 'homebridge/to/add'
+        self.outgoing_add_service_mqtt_topic = 'homebridge/to/add/service'
+        self.outgoing_remove_accessory_mqtt_topic = 'homebridge/to/remove'
+        self.outgoing_remove_service_mqtt_topic = 'homebridge/to/remove/service'
+        self.all_configs = {'name': '*'}
+        self.all_configs_props = {'name': '*_props'}
+        self.outdoor_multisensor_names = outdoor_multisensor_names
         self.outdoor_sensors_name = outdoor_sensors_name
         self.aircon_config = aircon_config
         self.auto_air_purifier_names = auto_air_purifier_names
-        self.temperature_format = {'service': 'TemperatureSensor', 'characteristic': 'CurrentTemperature'}
-        self.indoor_temp_name = ' Temperature'
-        self.temperature_service_name_format = ' Temperature'
-        self.humidity_format = {'service': 'HumiditySensor', 'characteristic': 'CurrentRelativeHumidity'}
-        self.indoor_humidity_name = ' Humidity'
-        self.humidity_service_name_format = ' Humidity'
-        self.light_level_format = {'service': 'LightSensor', 'characteristic': 'CurrentAmbientLightLevel'}
-        self.indoor_light_level_name = ' Lux'
-        self.light_level_service_name_format = ' Lux'
-        self.motion_format = {'service': 'MotionSensor', 'characteristic': 'MotionDetected'}
-        self.indoor_motion_name = ' Motion'
-        self.motion_service_name_format = ' Motion'
-        self.door_state_format = {'service': 'ContactSensor'}
-        self.door_state_characteristic = 'ContactSensorState'
-        self.door_state_service_name_format = ' Door'
-        self.door_battery_characteristic = 'StatusLowBattery'
+        self.window_blind_config = window_blind_config
+        self.door_sensor_names_locations = door_sensor_names_locations
+        self.light_dimmer_names_device_id = light_dimmer_names_device_id
+        self.colour_light_dimmer_names = colour_light_dimmer_names
+        self.air_purifier_names = air_purifier_names
+        self.multisensor_names = multisensor_names
+        self.powerpoint_names_device_id = powerpoint_names_device_id
+        self.flood_sensor_names = flood_sensor_names
+        self.temperature_format = {'name': ' Temperature', 'service': 'TemperatureSensor', 'service_name': ' Temperature', 'characteristics_properties': {}}
+        self.humidity_format = {'name': ' Humidity', 'service': 'HumiditySensor', 'service_name': ' Humidity', 'characteristics_properties': {}}
+        self.light_level_format = {'name': ' Lux', 'service': 'LightSensor', 'service_name': ' Lux', 'characteristics_properties': {}}
+        self.motion_format = {'name': ' Motion', 'service': 'MotionSensor', 'service_name': ' Motion', 'characteristics_properties': {}}
+        self.door_format = {'name': ' Door', 'service': 'ContactSensor', 'service_name': ' Door', 'characteristics_properties':{'StatusLowBattery': {}}}
         self.door_state_map = {'door_opened':{False: 0, True: 1}, 'low_battery':{False: 0, True: 1}}
-        self.dimmer_format = {'name': ' Light'}
-        self.dimmer_characteristics = {'Adjust Light Brightness': 'Brightness', 'Switch Light State': 'On', 'Adjust Light Hue': 'Hue', 'Adjust Light Saturation': 'Saturation'}
+        self.dimmer_format = {'name': ' Light', 'service': 'Lightbulb', 'service_name': ' Light', 'characteristics_properties': {'Brightness': {}}}
+        self.colour_light_dimmer_characteristics_properties = {'Brightness': {}, 'Hue': {}, 'Saturation': {}}
         self.dimmer_state_map = {0: False, 1: True}
-        self.blinds_format = {'name': ' Blinds'}
-        self.blind_position_map = {100: 'Open', 50: 'Venetian', 0: 'Closed'}
-        self.doorbell_format = {'name': 'Doorbell', 'characteristic': 'On'}
+        self.blinds_format = {'name': ' Blinds', 'service': 'WindowCovering', 'characteristics_properties': {'TargetPosition': {'minStep':50}}}
+        self.blinds_temp_format = {'service': 'Thermostat', 'target_characteristic': 'TargetTemperature', 'low_temp_service_name': 'Blind Low Temp', 'high_temp_service_name': 'Blind High Temp',
+                                    'high_temperature_characteristics_properties': {'TargetTemperature': {'minValue': 25, 'maxValue': 37, 'minStep': 1}, 'CurrentTemperature': {'minValue': -5, 'maxValue': 60, 'minStep': 0.1},
+                                    'TargetHeatingCoolingState': {'minValue': 0, 'maxValue': 2}, 'CurrentHeatingCoolingState': {'minValue': 0, 'maxValue': 2}},
+                                    'low_temperature_characteristics_properties': {'TargetTemperature':{'minValue': 5, 'maxValue': 16, 'minStep': 1},  'CurrentTemperature': {'minValue': -5, 'maxValue': 60, 'minStep': 0.1},
+                                    'TargetHeatingCoolingState': {'minValue': 0, 'maxValue': 2}, 'CurrentHeatingCoolingState': {'minValue': 0, 'maxValue': 2}}}
+        self.auto_blind_override_button_format = {'service_name': 'Auto Blind Override', 'service': 'Switch', 'characteristics_properties': {}}
+        self.blind_incoming_position_map = {100: 'Open', 50: 'Venetian', 0: 'Closed'}
+        self.blind_outgoing_position_map = {'Open': 100, 'Venetian': 50, 'Closed': 0}
+        self.doorbell_name_identifier = 'Doorbell'
         self.doorbell_homebridge_json_name_map = {'Idle': 'Doorbell Idle', 'Automatic': 'Doorbell Automatic', 'Auto Possible': 'Doorbell Status', 'Manual': 'Doorbell Manual',
-                                  'Triggered': 'Doorbell Status', 'Terminated': 'Doorbell Status', 'Ringing': 'Doorbell Status'}
+                                  'Triggered': 'Doorbell Status', 'Terminated': 'Doorbell Status', 'Ringing': 'Doorbell Status', 'Open Door': 'Doorbell Open Door'}
+        self.doorbell_characteristics_properties = {'Ringing': {'MotionSensor': {'MotionDetected': {}}}, 'Others': {'Switch': {}}}
         # Set up homebridge switch types for doorbell (Indicator, Switch or TimedMomentary)
         self.doorbell_button_type = {'Terminated': 'Indicator', 'Auto Possible': 'Indicator', 'Triggered': 'Indicator',
-                                     'Open Door': 'Momentary', 'Idle': 'Indicator', 'Automatic': 'Switch', 'Manual': 'Switch', 'Ringing': 'Motion', 'Activated': 'Indicator'}
-        self.powerpoint_format = {'name': ' Powerpoint', 'service': 'Outlet'}
-        self.garage_door_format = {'name': 'Garage', 'service_name': 'Garage Door'}
-        self.garage_door_characteristics = {'Current': 'CurrentDoorState','Target': 'TargetDoorState'}
-        self.flood_state_format = {'name': ' Flood', 'service': 'LeakSensor'}
-        self.flood_state_characteristic = 'LeakDetected'
-        self.flood_battery_characteristic = 'StatusLowBattery'
-        self.auto_blind_override_button_format = {'service_name': 'Auto Blind Override', 'characteristic': 'On'}
-        self.aircon_thermostat_characteristics = {'Mode': 'TargetHeatingCoolingState', 'Current Temperature': 'CurrentTemperature', 'Target Temperature':'TargetTemperature'}
+                                     'Open Door': 'Momentary', 'Idle': 'Indicator', 'Automatic': 'Switch', 'Manual': 'Switch', 'Ringing': 'Motion'}
+        self.powerpoint_format = {'name': ' Powerpoint', 'service': 'Outlet', 'service_name': '', 'characteristics_properties': {}}
+        self.garage_door_format = {'name': 'Garage', 'service_name': 'Garage Door', 'service': 'GarageDoorOpener', 'characteristics_properties': {}}
+        self.flood_state_format = {'name': ' Flood', 'service': 'LeakSensor', 'service_name': '', 'characteristics_properties': {'StatusLowBattery': {}}}
         self.aircon_thermostat_mode_map = {0: 'Off', 1: 'Heat', 2: 'Cool'}
         self.aircon_thermostat_incoming_mode_map = {'Off': 0, 'Heat': 1, 'Cool': 2}
         # Set up aircon homebridge button types (Indicator, Position Indicator or Thermostat Control)
@@ -366,43 +383,473 @@ class HomebridgeClass(object):
                                    'Filter': 'Indicator', 'Malfunction': 'Indicator', 'Ventilation': 'Switch', 'Reset Effectiveness Log': 'Switch'}
         self.aircon_thermostat_format = {}
         self.aircon_ventilation_button_format = {}
+        self.aircon_filter_indicator_format = {}
+        self.aircon_reset_effectiveness_log_button_format = {}
         self.aircon_control_thermostat_name = {}
         self.aircon_thermostat_names = {}
         self.aircon_damper_format = {}
         self.aircon_status_format = {}
+        self.aircon_remote_operation_format = {}
+        self.aircon_heat_format = {}
+        self.aircon_cool_format = {}
+        self.aircon_fan_format = {}
+        self.aircon_fan_hi_format = {}
+        self.aircon_fan_lo_format = {}
+        self.aircon_compressor_format = {}
+        self.aircon_heating_format = {}
+        self.aircon_malfunction_format = {}
         self.aircon_names = []
         for aircon_name in self.aircon_config:
-            self.aircon_thermostat_format[aircon_name] = {'service': 'Thermostat'}
-            self.aircon_ventilation_button_format[aircon_name] = {'name': aircon_name + ' Ventilation', 'service_name': 'Ventilation', 'characteristic': 'On'}
+            self.aircon_thermostat_format[aircon_name] = {'service': 'Thermostat', 'characteristics_properties': {'TargetTemperature': {'minValue': 18, 'maxValue': 28, 'minStep': 0.5},
+                                                                                                                  'CurrentTemperature': {'minValue': -5, 'maxValue': 60, 'minStep': 0.1},
+                                                                                                                  'TargetHeatingCoolingState': {'minValue': 0, 'maxValue': 2},
+                                                                                                                  'CurrentHeatingCoolingState': {'minValue': 0, 'maxValue': 2}}}
+            self.aircon_ventilation_button_format[aircon_name] = {'name': aircon_name + ' Ventilation', 'service_name': 'Ventilation', 'service': 'Switch', 'characteristics_properties': {}}
+            self.aircon_filter_indicator_format[aircon_name] = {'name': aircon_name + ' Filter', 'service_name': 'Filter', 'service': 'Switch', 'characteristics_properties': {}}
+            self.aircon_reset_effectiveness_log_button_format[aircon_name] = {'name': aircon_name + ' Reset Effectiveness Log', 'service_name': 'Reset Effectiveness Log', 'service': 'Switch', 'characteristics_properties': {}}
             self.aircon_control_thermostat_name[aircon_name] = self.aircon_config[aircon_name]['Master']                                                                 
             self.aircon_thermostat_names[aircon_name] = self.aircon_config[aircon_name]['Day Zone'] + self.aircon_config[aircon_name]['Night Zone']
             self.aircon_thermostat_names[aircon_name].append(self.aircon_config[aircon_name]['Master'])
-            self.aircon_damper_format[aircon_name] = {'name': aircon_name + ' Status', 'service': 'Door', 'service_name': 'Damper'}
             self.aircon_status_format[aircon_name] = {'name': aircon_name + ' Status'}
+            self.aircon_remote_operation_format[aircon_name] = {'name': aircon_name + ' Status', 'service_name': 'Remote Operation', 'service': 'Switch', 'characteristics_properties': {}}
+            self.aircon_damper_format[aircon_name] = {'name': aircon_name + ' Status', 'service_name': 'Damper', 'service': 'Door', 'characteristics_properties': {'CurrentPosition':{'minValue': 0, 'maxValue': 100, 'minStep': 10}}}
+            self.aircon_heat_format[aircon_name] = {'name': aircon_name + ' Status', 'service_name': 'Heat', 'service': 'Switch', 'characteristics_properties': {}}
+            self.aircon_cool_format[aircon_name] = {'name': aircon_name + ' Status', 'service_name': 'Cool', 'service': 'Switch', 'characteristics_properties': {}}
+            self.aircon_fan_format[aircon_name] = {'name': aircon_name + ' Status', 'service_name': 'Fan', 'service': 'Switch', 'characteristics_properties': {}}
+            self.aircon_fan_hi_format[aircon_name] = {'name': aircon_name + ' Status', 'service_name': 'Fan Hi', 'service': 'Switch', 'characteristics_properties': {}}
+            self.aircon_fan_lo_format[aircon_name] = {'name': aircon_name + ' Status', 'service_name': 'Fan Lo', 'service': 'Switch', 'characteristics_properties': {}}
+            self.aircon_compressor_format[aircon_name] = {'name': aircon_name + ' Status', 'service_name': 'Compressor', 'service': 'Switch', 'characteristics_properties': {}}
+            self.aircon_heating_format[aircon_name] = {'name': aircon_name + ' Status', 'service_name': 'Heating', 'service': 'Switch', 'characteristics_properties': {}}
+            self.aircon_malfunction_format[aircon_name] = {'name': aircon_name + ' Status', 'service_name': 'Malfunction', 'service': 'Switch', 'characteristics_properties': {}}  
             for thermostat_name in self.aircon_thermostat_names[aircon_name]:
                 self.aircon_button_type[aircon_name + ' ' + thermostat_name] = 'Thermostat Control'
             self.aircon_names.append(aircon_name)
-        self.window_blind_position_map = {'Open': 100, 'Venetian': 50, 'Closed': 0}
-	# Set up Air Purifiers
-        self.air_quality_service_name_map = {}
-        self.CO2_service_name_map = {}
-        self.PM2_5_service_name_map = {}
-        for name in self.auto_air_purifier_names:
-            self.air_quality_service_name_map[name] = name + ' Air Quality'
-            self.CO2_service_name_map[name] = name + ' CO2'
-            self.PM2_5_service_name_map[name] = name + ' PM2.5 Alert'
-        self.air_purifier_format = {'name': 'Air Purifier', 'service' :'AirPurifier'}
-        self.reboot_format = {'name': 'Reboot', 'service_name': 'Reboot Arm', 'characteristic': 'On'}
-        self.reboot_trigger_format = {'name': 'Reboot', 'service_name': 'Reboot Trigger', 'characteristic': 'On'}
+        # Set up Air Purifiers
+        self.air_purifier_format = {'name': ' Air Purifier', 'service' :'AirPurifier', 'service_name': '', 'characteristics_properties': {'RotationSpeed': {'minValue': 0, 'maxValue': 100, 'minStep': 25}, 'LockPhysicalControls': {}}}
+        self.air_purifier_LED_format = {'name': ' Air Purifier', 'service_name': ' LED', 'service' :'Lightbulb', 'characteristics_properties': {'Brightness': {}}}
+        self.air_purifier_filter_format = {'name': ' Air Purifier', 'service_name': ' Filter', 'service' :'FilterMaintenance', 'characteristics_properties': {}}
+        self.air_quality_format = {'name': ' Air Quality', 'service_name': ' Air Quality', 'service' :'AirQualitySensor', 'characteristics_properties': {'PM10Density': {}, 'VOCDensity': {}}}
+        self.CO2_level_format = {'name': ' CO2', 'service_name': ' CO2', 'service' :'CarbonDioxideSensor', 'characteristics_properties': {'CarbonDioxideLevel': {}, 'CarbonDioxidePeakLevel': {}}}
+        self.PM2_5_alert_format = {'name': ' PM2.5 Alert', 'service_name': ' PM2.5 Alert', 'service' :'MotionSensor', 'characteristics_properties': {'MotionDetected':{}}}
+        self.air_quality_service_name_map = {name: name + self.air_quality_format['name'] for name in self.auto_air_purifier_names}
+        self.CO2_service_name_map = {name: name + self.CO2_level_format['name'] for name in self.auto_air_purifier_names}
+        self.PM2_5_service_name_map = {name: name + self.PM2_5_alert_format['name'] for name in self.auto_air_purifier_names}
+        # Set up rebbot
+        self.reboot_format = {'name': 'Reboot'}
+        self.reboot_arm_format = {'service_name': 'Reboot Arm', 'service': 'Switch', 'characteristics_properties': {}}
+        self.reboot_trigger_format = {'service_name': 'Reboot Trigger', 'service': 'Switch', 'characteristics_properties': {}}
+        self.restart_trigger_format = {'service_name': 'Restart Trigger', 'service': 'Switch', 'characteristics_properties': {}}
         self.reboot_armed = False
-        self.restart_trigger_format = {'name': 'Reboot', 'service_name': 'Restart Trigger', 'characteristic': 'On'}		
-		
+        # Set up config
+        self.current_config = {}
+        self.ack_cache = {}
+        
+    def check_and_fix_config(self): # Check and fix Homebridge Cached Accessories config against required config 
+        print('Homebridge config check started. Please wait.')
+        homebridge_restart_required = False
+        time.sleep(5)
+        client.publish(self.outgoing_config_mqtt_topic, json.dumps(self.all_configs_props)) # Request config check
+        time.sleep(1)
+        current_homebridge_config = self.current_config
+        #current_homebridge_config['Dummy Accessory'] = {'Dummy Service Name': {'DummyService':{'DummyCharacteristic':{'DummyProperty':0}}}}
+        required_homebridge_config = self.indentify_required_homebridge_config()
+        missing_accessories, missing_accessories_services, additional_accessories_services, incorrect_accessories_services = self.find_incorrect_accessories(required_homebridge_config, current_homebridge_config)
+        excess_accessories = self.find_excess_accessories(required_homebridge_config, current_homebridge_config)
+        print('Missing Accessories:', missing_accessories)
+        print('Excess Accessories:', excess_accessories)
+        print('Missing Services within Accessories:', missing_accessories_services)
+        print('Unrequired Services within Accessories', additional_accessories_services)
+        print('Incorrect Services within Accessories:', incorrect_accessories_services)
+        # Handle missing Accessories
+        if missing_accessories == []: 
+            print('No missing accessories')
+        else:
+            for accessory in missing_accessories:
+                print(accessory, 'accessory is missing, along with the following config:-')
+                for service_name in required_homebridge_config[accessory]:
+                    print('Service Name:', service_name, 'Service:', required_homebridge_config[accessory][service_name])
+            add_missing_accessories = input("Do you want to add the missing accessories? (y/n): ")
+            if add_missing_accessories == 'y':
+                homebridge_restart_required = True
+                self.add_missing_accessories(missing_accessories, required_homebridge_config)     
+        # Handle excess Accessories
+        if excess_accessories == []: 
+            print('No excess accessories')
+        else:
+            for accessory in excess_accessories:
+                print(accessory, 'accessory is not required')
+            remove_excess_accessories = input("Do you want to remove excess accessories? (y/n): ")
+            if remove_excess_accessories == 'y':
+                homebridge_restart_required = True
+                self.remove_excess_accessories(excess_accessories)
+        # Handle missing Services within Accessories
+        if missing_accessories_services == []:
+            print('No missing accessories services')
+        else:
+            for accessory in missing_accessories_services:
+                for key in accessory:
+                    for service_name in accessory[key]:
+                        print(key, "accessory's service name", service_name, "is missing, along with the config:", required_homebridge_config[key][service_name])
+            add_missing_accessories_services = input("Do you want to add the missing accessories' services? (y/n): ")
+            if add_missing_accessories_services == 'y':
+                homebridge_restart_required = True
+                self.add_missing_accessories_services(missing_accessories_services, required_homebridge_config)
+        # Handle unrequired Services within Accessories
+        if additional_accessories_services == []:
+            print('No additional accessories services')
+        else:
+            for accessory in additional_accessories_services:
+                for key in accessory:
+                    for service_name in accessory[key]:
+                        print('')
+                        print(key, "accessory's service name", service_name, "is not required")
+            remove_additional_accessories_services = input("Do you want to delete the excess accessories' services? (y/n): ")
+            if remove_additional_accessories_services == 'y':
+                homebridge_restart_required = True
+                self.remove_additional_accessories_services(additional_accessories_services)
+        # Handle Services that are within Accessories but have a config error
+        if incorrect_accessories_services == []:
+            print('No incorrect accessories services')
+        else:
+            for accessory in incorrect_accessories_services:
+                for key in accessory:
+                    print('')
+                    print(key, 'accessory is incorrect')
+                    for service_name in accessory[key]:
+                        if service_name in current_homebridge_config[key]:
+                            print('Service Name:', service_name, 'is incorrect')
+                        else:
+                            print('Service Name:', service_name, 'is missing')
+            fix_incorrect_accessories = input("Do you want to fix the incorrect accessories? (y/n): ")
+            if fix_incorrect_accessories == 'y':
+                homebridge_restart_required = True
+                self.fix_incorrect_accessories(incorrect_accessories_services, required_homebridge_config)
+        if homebridge_restart_required:
+            print('Waiting for config acknowledgements')
+            time.sleep(10)
+            self.check_ack_cache()
+            print('Please restart homebridge now to update the homebridge config cache')
+            homebridge_restarted = input("Please enter 'y' when you have restarted homebridge")
+            if homebridge_restarted == 'y':
+                print('Updated homebridge config now captured in the homebridge cache')
+            else:
+                print('Updated homebridge config has not been captured in the homebridge cache. THE CACHE STILL CONTAINS THE OLD CONFIG UNTIL HOMEBRIDGE IS RESTARTED')
+        print('Homebridge config check completed')
+
+    def indentify_required_homebridge_config(self):
+        # Blinds
+        blinds_homebridge_config = {blinds: {**{blind: {self.blinds_format['service']: self.blinds_format['characteristics_properties']} for blind in self.window_blind_config[blinds]['status']},
+                                             **{self.blinds_temp_format['high_temp_service_name']: {self.blinds_temp_format['service']: self.blinds_temp_format['high_temperature_characteristics_properties']},
+                                              self.blinds_temp_format['low_temp_service_name']: {self.blinds_temp_format['service']: self.blinds_temp_format['low_temperature_characteristics_properties']},
+                                              self.auto_blind_override_button_format['service_name']: {self.auto_blind_override_button_format['service']: self.auto_blind_override_button_format['characteristics_properties']}}}
+                                    for blinds in self.window_blind_config}
+        # Doors
+        door_sensor_rooms = []
+        for door in self.door_sensor_names_locations:
+            if self.door_sensor_names_locations[door] not in door_sensor_rooms:
+                door_sensor_rooms.append(self.door_sensor_names_locations[door]) # Create a list of rooms with door sensors to create accessory names
+        door_sensor_homebridge_config = {room: {} for room in door_sensor_rooms} # Make an accessory name key for each door sensor room
+        for room in door_sensor_rooms: # Iterate through the list of rooms with door sensors
+            for door in self.door_sensor_names_locations:
+                if self.door_sensor_names_locations[door] == room: # Add the door sensor to the relevant room
+                    door_sensor_homebridge_config[room][door + self.door_format['service_name']] = {self.door_format['service']: self.door_format['characteristics_properties']}
+        
+        # Garage
+        garage_door_homebridge_config = {self.garage_door_format['name']: {self.garage_door_format['service_name']: {self.garage_door_format['service']: self.garage_door_format['characteristics_properties']}}}
+        
+        # Reboot
+        reboot_homebridge_config = {self.reboot_format['name']: {self.reboot_arm_format['service_name']: {self.reboot_arm_format['service']: self.reboot_arm_format['characteristics_properties']},
+                                                                        self.reboot_trigger_format['service_name']: {self.reboot_trigger_format['service']: self.reboot_trigger_format['characteristics_properties']},
+                                                                        self.restart_trigger_format['service_name']: {self.restart_trigger_format['service']: self.restart_trigger_format['characteristics_properties']}}}
+        # Light Dimmers
+        light_dimmers_homebridge_config = {light: {light: {self.dimmer_format['service']: self.dimmer_format['characteristics_properties']}} for light in self.light_dimmer_names_device_id}
+        for light in self.colour_light_dimmer_names:
+            light_dimmers_homebridge_config[light][light][self.dimmer_format['service']] = self.colour_light_dimmer_characteristics_properties # Add hue and saturation characteristics to colour dimmer
+        # Aircon
+        aircon_homebridge_config = {}
+        for aircon_name in self.aircon_config:
+            aircon_homebridge_config[self.aircon_ventilation_button_format[aircon_name]['name']] = {self.aircon_ventilation_button_format[aircon_name]['service_name']:
+                                                                                                    {self.aircon_ventilation_button_format[aircon_name]['service']:
+                                                                                                     self.aircon_ventilation_button_format[aircon_name]['characteristics_properties']}}
+            aircon_homebridge_config[self.aircon_filter_indicator_format[aircon_name]['name']] = {self.aircon_filter_indicator_format[aircon_name]['service_name']: {self.aircon_filter_indicator_format[aircon_name]['service']:
+                                                                                                                                                                    self.aircon_filter_indicator_format[aircon_name]['characteristics_properties']}}
+            aircon_homebridge_config[self.aircon_reset_effectiveness_log_button_format[aircon_name]['name']] = {self.aircon_reset_effectiveness_log_button_format[aircon_name]['service_name']:
+                                                                                                                {self.aircon_reset_effectiveness_log_button_format[aircon_name]['service']:
+                                                                                                                  self.aircon_reset_effectiveness_log_button_format[aircon_name]['characteristics_properties']}}
+            aircon_homebridge_config[self.aircon_status_format[aircon_name]['name']] = {self.aircon_remote_operation_format[aircon_name]['service_name']:
+                                                                                        {self.aircon_remote_operation_format[aircon_name]['service']:
+                                                                                         self.aircon_remote_operation_format[aircon_name]['characteristics_properties']},
+                                                                                        self.aircon_damper_format[aircon_name]['service_name']:
+                                                                                        {self.aircon_damper_format[aircon_name]['service']:
+                                                                                         self.aircon_damper_format[aircon_name]['characteristics_properties']},
+                                                                                        self.aircon_heat_format[aircon_name]['service_name']:
+                                                                                        {self.aircon_heat_format[aircon_name]['service']:
+                                                                                         self.aircon_heat_format[aircon_name]['characteristics_properties']},
+                                                                                        self.aircon_cool_format[aircon_name]['service_name']:
+                                                                                        {self.aircon_cool_format[aircon_name]['service']:
+                                                                                         self.aircon_cool_format[aircon_name]['characteristics_properties']},
+                                                                                        self.aircon_fan_format[aircon_name]['service_name']:
+                                                                                        {self.aircon_fan_format[aircon_name]['service']:
+                                                                                         self.aircon_fan_format[aircon_name]['characteristics_properties']},
+                                                                                        self.aircon_fan_hi_format[aircon_name]['service_name']:
+                                                                                        {self.aircon_fan_hi_format[aircon_name]['service']:
+                                                                                         self.aircon_fan_hi_format[aircon_name]['characteristics_properties']},
+                                                                                        self.aircon_fan_lo_format[aircon_name]['service_name']:
+                                                                                        {self.aircon_fan_lo_format[aircon_name]['service']:
+                                                                                         self.aircon_fan_lo_format[aircon_name]['characteristics_properties']},
+                                                                                        self.aircon_compressor_format[aircon_name]['service_name']:
+                                                                                        {self.aircon_compressor_format[aircon_name]['service']:
+                                                                                         self.aircon_compressor_format[aircon_name]['characteristics_properties']},
+                                                                                        self.aircon_heating_format[aircon_name]['service_name']:
+                                                                                        {self.aircon_heating_format[aircon_name]['service']:
+                                                                                         self.aircon_heating_format[aircon_name]['characteristics_properties']},
+                                                                                        self.aircon_malfunction_format[aircon_name]['service_name']:
+                                                                                        {self.aircon_malfunction_format[aircon_name]['service']:
+                                                                                         self.aircon_malfunction_format[aircon_name]['characteristics_properties']}}
+            aircon_thermostat_names = self.aircon_config[aircon_name]['Day Zone'] + self.aircon_config[aircon_name]['Night Zone'] + [self.aircon_config[aircon_name]['Master']]
+            for thermostat in aircon_thermostat_names:
+                aircon_homebridge_config[aircon_name + ' ' + thermostat] = {aircon_name + ' ' + thermostat: {self.aircon_thermostat_format[aircon_name]['service']:
+                                                                                                             self.aircon_thermostat_format[aircon_name]['characteristics_properties']}}
+        # Doorbell
+        doorbell_homebridge_config = {'Doorbell Status': {}} # Make a Doorbell Status Key
+        for button in self.doorbell_homebridge_json_name_map:
+            if self.doorbell_homebridge_json_name_map[button] != 'Doorbell Status':
+                doorbell_homebridge_config[self.doorbell_homebridge_json_name_map[button]] = {button: self.doorbell_characteristics_properties['Others']}
+            else:
+                if button == 'Ringing':
+                    doorbell_homebridge_config['Doorbell Status'][button] = self.doorbell_characteristics_properties['Ringing']
+                else:
+                    doorbell_homebridge_config['Doorbell Status'][button] = self.doorbell_characteristics_properties['Others']
+                            
+        # Air Purifiers
+        air_purifiers_homebridge_config = {}
+        for air_purifier in self.air_purifier_names:
+            air_purifiers_homebridge_config[air_purifier + self.air_purifier_format['name']] = {air_purifier + self.air_purifier_format['service_name']: {self.air_purifier_format['service']: self.air_purifier_format['characteristics_properties']},
+                                                                                            air_purifier + self.air_purifier_LED_format['service_name']: {self.air_purifier_LED_format['service']:
+                                                                                                                                                              self.air_purifier_LED_format['characteristics_properties']},
+                                                                                                air_purifier + self.air_purifier_filter_format['service_name']: {self.air_purifier_filter_format['service']:
+                                                                                                                                                                 self.air_purifier_filter_format['characteristics_properties']}}
+        for air_purifier in self.auto_air_purifier_names:
+            air_purifiers_homebridge_config[air_purifier + self.air_quality_format['name']] = {air_purifier + self.air_quality_format['service_name']: {self.air_quality_format['service']:
+                                                                                                                                                                 self.air_quality_format['characteristics_properties']}}
+            air_purifiers_homebridge_config[air_purifier + self.CO2_level_format['name']] = {air_purifier + self.CO2_level_format['service_name']: {self.CO2_level_format['service']:
+                                                                                                                                                                 self.CO2_level_format['characteristics_properties']}}
+            air_purifiers_homebridge_config[air_purifier + self.PM2_5_alert_format['name']] = {air_purifier + self.PM2_5_alert_format['service_name']: {self.PM2_5_alert_format['service']:
+                                                                                                                                                                 self.PM2_5_alert_format['characteristics_properties']}} 
+        # Multisensors
+        multisensors_homebridge_config = {self.outdoor_sensors_name: {}} # Make a key for the outdoor sensors' accessory name
+        for multisensor in self.multisensor_names:
+            if multisensor in self.outdoor_multisensor_names: # Outdoor sensors are grouped as services under one accessory
+                multisensors_homebridge_config[self.outdoor_sensors_name][multisensor + self.temperature_format['service_name']] = {self.temperature_format['service']: self.temperature_format['characteristics_properties']}
+                multisensors_homebridge_config[self.outdoor_sensors_name][multisensor + self.humidity_format['service_name']] = {self.humidity_format['service']: self.humidity_format['characteristics_properties']}
+                multisensors_homebridge_config[self.outdoor_sensors_name][multisensor + self.light_level_format['service_name']] = {self.light_level_format['service']: self.light_level_format['characteristics_properties']}
+                multisensors_homebridge_config[self.outdoor_sensors_name][multisensor + self.motion_format['service_name']] = {self.motion_format['service']: self.motion_format['characteristics_properties']}
+            else: # Indoor Sensors are separate accessories
+                multisensors_homebridge_config[multisensor + self.temperature_format['name']] = {multisensor + self.temperature_format['service_name']: {self.temperature_format['service']:
+                                                                                                                                                                 self.temperature_format['characteristics_properties']}}
+                multisensors_homebridge_config[multisensor + self.humidity_format['name']] = {multisensor + self.humidity_format['service_name']: {self.humidity_format['service']:
+                                                                                                                                                   self.humidity_format['characteristics_properties']}}
+                multisensors_homebridge_config[multisensor + self.light_level_format['name']] = {multisensor + self.light_level_format['service_name']: {self.light_level_format['service']:
+                                                                                                                                                         self.light_level_format['characteristics_properties']}}
+                multisensors_homebridge_config[multisensor + self.motion_format['name']] = {multisensor + self.motion_format['service_name']: {self.motion_format['service']:
+                                                                                                                                               self.motion_format['characteristics_properties']}}
+        # Powerpoints
+        powerpoints_homebridge_config = {powerpoint + self.powerpoint_format['name']: {powerpoint + self.powerpoint_format['service_name']: {self.powerpoint_format['service']: self.powerpoint_format['characteristics_properties']}}
+                                         for powerpoint in self.powerpoint_names_device_id}
+        # Flood Sensors
+        flood_sensors_homebridge_config = {flood_sensor + self.flood_state_format['name']: {flood_sensor + self.flood_state_format['service_name']: {self.flood_state_format['service']:
+                                                                                                                                                     self.flood_state_format['characteristics_properties']}}
+                                           for flood_sensor in self.flood_sensor_names}
+        # Build entire equired_homebridge_config
+        required_homebridge_config = {**blinds_homebridge_config, **door_sensor_homebridge_config, **garage_door_homebridge_config, **reboot_homebridge_config, **light_dimmers_homebridge_config,
+                                      **aircon_homebridge_config, **doorbell_homebridge_config, **air_purifiers_homebridge_config, **multisensors_homebridge_config, **powerpoints_homebridge_config,
+                                      **flood_sensors_homebridge_config}
+        return required_homebridge_config
+                    
+    def find_incorrect_accessories(self, required_homebridge_config, current_homebridge_config):
+        missing_accessories = []
+        incorrect_accessories_services = []
+        missing_accessories_services = []
+        additional_accessories_services = []
+        for required_accessory in required_homebridge_config:
+            if required_accessory in current_homebridge_config: # Is the required accessory in the current config?
+                missing_services = []
+                additional_services = []
+                incorrect_services = []
+                for service_name in required_homebridge_config[required_accessory]:
+                    if service_name in current_homebridge_config[required_accessory]: # Is the required service_name in the current config?
+                        for service in required_homebridge_config[required_accessory][service_name]:
+                            characteristics_OK = True
+                            properties_OK = True
+                            if service in current_homebridge_config[required_accessory][service_name]: # Does the service in the current config match the required service?
+                                service_OK = True
+                                for characteristic in required_homebridge_config[required_accessory][service_name][service]: # Do the characteristics in the current config match the required characteristics?
+                                    if characteristic in current_homebridge_config[required_accessory][service_name][service]:
+                                        for prop in required_homebridge_config[required_accessory][service_name][service][characteristic]:  # Do the properties in the current config match the required properties?
+                                            if required_homebridge_config[required_accessory][service_name][service][characteristic][prop] != {}:
+                                                if current_homebridge_config[required_accessory][service_name][service][characteristic][prop] != required_homebridge_config[required_accessory][service_name][service][characteristic][prop]:
+                                                    properties_OK = False
+                                    else:
+                                        characteristics_OK = False
+                            else:
+                                service_OK = False
+                        if not service_OK or not characteristics_OK or not properties_OK: # Is the service_name correct but there are errors in the service, characteristics or properties?
+                            incorrect_services.append(service_name) # Capture incorrect services
+                            print('Incorrect Service:', service_name)
+                            print('service:', service_OK, 'characteristics:', characteristics_OK, 'properties:', properties_OK)
+                    else: # The required service_name is missing from the current config
+                        missing_services.append(service_name) # Capture missing services
+                        print(service_name, 'is required in', required_accessory, 'accessory, but is missing')
+                        for current_service_name in current_homebridge_config[required_accessory]:
+                            if current_service_name not in required_homebridge_config[required_accessory]: # Is the current config service_name required?
+                                additional_services.append(current_service_name) # Capture current config service_names that are not required 
+                                print(current_service_name, 'is not required in', required_accessory, ' but is currently configured')
+                if incorrect_services != []: # Record all incorrect services for the required accessory
+                    incorrect_accessories_services.append({required_accessory: incorrect_services})
+                if additional_services != []: # Record services that are in excess of the required accessory
+                    additional_accessories_services.append({required_accessory: additional_services})
+                if missing_services != []: # Record all missing services for the required accessory
+                    missing_accessories_services.append({required_accessory: missing_services})
+            else: # The required accessory is missing from the current config
+                missing_accessories.append(required_accessory) # Record that the required accessory is missing    
+        return missing_accessories, missing_accessories_services, additional_accessories_services, incorrect_accessories_services
+    
+    def find_excess_accessories(self, required_homebridge_config, current_homebridge_config):
+        excess_accessories = []
+        for current_accessory in current_homebridge_config:
+           if current_accessory not in required_homebridge_config:
+               excess_accessories.append(current_accessory)
+        return excess_accessories
+    
+    def add_missing_accessories(self, missing_accessories, required_homebridge_config):
+        print('Adding Missing Accessories')
+        for accessory in missing_accessories:
+            first_service = True
+            homebridge_json = {}
+            homebridge_json['name'] = accessory
+            for service_name in required_homebridge_config[accessory]:
+                homebridge_json['service_name'] = service_name
+                for service in required_homebridge_config[accessory][service_name]:
+                    homebridge_json['service'] = service
+                    for characteristic in required_homebridge_config[accessory][service_name][service]:
+                        if required_homebridge_config[accessory][service_name][service][characteristic] != {}:
+                            properties = {}
+                            for prop in required_homebridge_config[accessory][service_name][service][characteristic]:
+                                if required_homebridge_config[accessory][service_name][service][characteristic][prop] != {}:
+                                    properties[prop] = required_homebridge_config[accessory][service_name][service][characteristic][prop]
+                                else:
+                                    properties[prop] = 'default'
+                            homebridge_json[characteristic] = properties
+                        else:
+                            homebridge_json[characteristic] = 'default'
+                if first_service:
+                    config_command = 'Adding ' + accessory
+                    print('Adding', accessory, self.outgoing_add_accessory_mqtt_topic, homebridge_json)
+                    ack_payload = {"ack": True, "message": "accessory '" + homebridge_json["name"] + "', service_name '" + homebridge_json['service_name'] + "' is added."}
+                    #print(ack_payload)
+                    self.push_ack_cache({config_command: ack_payload})
+                    client.publish(self.outgoing_add_accessory_mqtt_topic, json.dumps(homebridge_json))
+                    first_service = False
+                    homebridge_json = {}
+                    homebridge_json['name'] = accessory
+                else:
+                    config_command = 'Adding '+ service_name + ' service to ' + accessory
+                    print('Adding', service_name, 'service to', accessory, self.outgoing_add_service_mqtt_topic, homebridge_json)
+                    ack_payload = {"ack": True, "message": "service_name '" + homebridge_json['service_name'] + "', service '" +  homebridge_json['service'] + "' is added."}
+                    #print(ack_payload)
+                    self.push_ack_cache({config_command: ack_payload})
+                    client.publish(self.outgoing_add_service_mqtt_topic, json.dumps(homebridge_json))
+                    homebridge_json = {}
+                    homebridge_json['name'] = accessory
+                        
+    def add_missing_accessories_services(self, missing_accessories_services, required_homebridge_config):
+        print('Adding Missing Services')
+        for accessory in missing_accessories_services:
+            for key in accessory:
+                for service_name in accessory[key]:
+                    homebridge_json = {}
+                    homebridge_json['name'] = key
+                    homebridge_json['service_name'] = service_name
+                    for service in required_homebridge_config[key][service_name]:
+                        homebridge_json['service'] = service
+                        for characteristic_properties in required_homebridge_config[key][service_name][service]:
+                            if required_homebridge_config[key][service_name][service][characteristic_properties] != {}:
+                                homebridge_json[characteristic_properties] = required_homebridge_config[key][service_name][service][characteristic_properties]
+                            else:
+                                homebridge_json[characteristic_properties] = 'default'
+                    config_command = 'Adding '+ service_name + ' service to ' + key
+                    print('Adding', service_name, 'service to', key, self.outgoing_add_service_mqtt_topic, homebridge_json)
+                    ack_payload = {"ack": True, "message": "service_name '," + homebridge_json['service_name'] + "', service '" +  homebridge_json['service'] + "' is added."}
+                    #print(ack_payload)
+                    self.push_ack_cache({config_command: ack_payload})
+                    client.publish(self.outgoing_add_service_mqtt_topic, json.dumps(homebridge_json))
+                    homebridge_json = {}
+                    homebridge_json['name'] = key
+        
+    def remove_additional_accessories_services(self, additional_accessories_services):
+        print('Removing Additional Services')
+        for accessory in additional_accessories_services:
+            for key in accessory:
+                for service_name in accessory[key]:
+                    homebridge_json = {}
+                    homebridge_json['name'] = key
+                    homebridge_json['service_name'] = service_name
+                    config_command = 'Removing '+ service_name + ' from ' + key
+                    print('Removing', service_name, 'from', key, self.outgoing_remove_service_mqtt_topic, homebridge_json)
+                    ack_payload = {"ack": True, "message": "accessory '" + homebridge_json["name"] + "', service_name '" + homebridge_json['service_name'] + "' is removed."}
+                    #print(ack_payload)
+                    self.push_ack_cache({config_command: ack_payload})
+                    client.publish(self.outgoing_remove_service_mqtt_topic, json.dumps(homebridge_json))
+        
+    def fix_incorrect_accessories(self, incorrect_accessories_services, required_homebridge_config): ### Add ACK ###
+        print('Fixing Incorrect Accessories')
+        for accessory in incorrect_accessories_services:
+            for key in accessory:
+                for service_name in accessory[key]:
+                    homebridge_json = {}
+                    homebridge_json['name'] = key
+                    homebridge_json['service_name'] = service_name
+                    config_command = 'Removing '+ service_name + ' from ' + key
+                    print('Removing', service_name, 'from', key, self.outgoing_remove_service_mqtt_topic, homebridge_json)
+                    ack_payload = {"ack": True, "message": "accessory '" + homebridge_json["name"] + "', service_name '" + homebridge_json['service_name'] + "' is removed."}
+                    #print(ack_payload)
+                    self.push_ack_cache({config_command: ack_payload})
+                    client.publish(self.outgoing_remove_service_mqtt_topic, json.dumps(homebridge_json))
+                    time.sleep(0.5)
+                    for service in required_homebridge_config[key][service_name]:
+                        homebridge_json['service'] = service
+                        for characteristic_properties in required_homebridge_config[key][service_name][service]:
+                            if required_homebridge_config[key][service_name][service][characteristic_properties] != {}:
+                                homebridge_json[characteristic_properties] = required_homebridge_config[key][service_name][service][characteristic_properties]
+                            else:
+                                homebridge_json[characteristic_properties] = 'default'
+                    config_command = 'Adding '+ service_name + ' service to ' + key
+                    print('Adding', service_name, 'service to', key, self.outgoing_add_service_mqtt_topic, homebridge_json)
+                    ack_payload = {"ack": True, "message": "service_name '" + homebridge_json['service_name'] + "', service '" +  homebridge_json['service'] + "' is added."}
+                    #print(ack_payload)
+                    self.push_ack_cache({config_command: ack_payload})
+                    client.publish(self.outgoing_add_service_mqtt_topic, json.dumps(homebridge_json))
+                    homebridge_json = {}
+                    homebridge_json['name'] = key
+               
+    def remove_excess_accessories(self, excess_accessories):
+        print('Removing Excess Accessories')
+        for accessory in excess_accessories:
+            homebridge_json = {}
+            homebridge_json['name'] = accessory
+            config_command = 'Removing '+ accessory
+            print('Removing', accessory, 'Accessory', self.outgoing_remove_accessory_mqtt_topic, homebridge_json)
+            ack_payload = {"ack": True, "message": "accessory '" + homebridge_json["name"] + "' is removed."}
+            #print(ack_payload)
+            self.push_ack_cache({config_command: ack_payload})
+            client.publish(self.outgoing_remove_accessory_mqtt_topic, json.dumps(homebridge_json))
+        
     def capture_homebridge_buttons(self, parsed_json):
         if self.dimmer_format['name'] in parsed_json['name']: # If it's a light dimmer button
             self.adjust_light_dimmer(parsed_json)
         elif self.blinds_format['name'] in parsed_json['name']: # If it's a blind button
             self.process_blind_button(parsed_json)
-        elif self.doorbell_format['name'] in parsed_json['name']: # If it's a doorbell button
+        elif self.doorbell_name_identifier in parsed_json['name']: # If it's a doorbell button
             self.process_doorbell_button(parsed_json)
         elif self.powerpoint_format['name'] in parsed_json['name']: # If it's a powerpoint button
             self.switch_powerpoint(parsed_json)
@@ -420,25 +867,60 @@ class HomebridgeClass(object):
                     self.process_aircon_button(parsed_json, aircon_name)
             if identified_button == False: # If parsed_json['name'] is unknown
                 print ('Unknown homebridge button received', parsed_json['name'])
+                
+    def config_response(self, parsed_json):
+        if "ack" in parsed_json:
+            self.handle_acks(parsed_json)
+        else:
+            self.capture_config(parsed_json)
+        
+    def handle_acks(self, parsed_json):
+        print('Homebridge Ack Received', parsed_json)
+        command_found = False
+        for ack in self.ack_cache:
+            if self.ack_cache[ack] == parsed_json:
+                print ('Command', ack, 'acknowledged')
+                command_found = True
+        if command_found:
+            del self.ack_cache[ack]
+        else:
+            print("No command matches received ack", parsed_json)
+
+    def push_ack_cache(self, command_ack):
+        for key in command_ack:
+            self.ack_cache[key] = command_ack[key]
+        print(command_ack, 'added to ack_cache', self.ack_cache)
+        
+    def check_ack_cache(self):
+        if self.ack_cache == {}:
+            print('All config changes successful')
+        else:
+            for ack in self.ack_cache:
+                print(ack, 'command unsuccessful')           
+        
+    def capture_config(self, parsed_json):
+        print('Homebridge Config')
+        current_config = {accessory: {service_name: {parsed_json[accessory]['services'][service_name]: parsed_json[accessory]['properties'][service_name]} for service_name in parsed_json[accessory]['services']} for accessory in parsed_json}
+        self.current_config = current_config
 
     def adjust_light_dimmer(self, parsed_json):
         # Determine which dimmer needs to be adjusted and call the relevant dimmer object method
         # that then calls the Domoticz method to adjust the dimmer brightness or state
         dimmer_name = parsed_json['name']
-        if parsed_json['characteristic'] == self.dimmer_characteristics['Adjust Light Brightness']:
+        if parsed_json['characteristic'] == 'Brightness':
             #print('Adjust Dimmer Brightness')
             brightness = int(parsed_json['value'])
             light_dimmer[dimmer_name].adjust_brightness(brightness)
         # Adjust dimmer state if a switch light state command has come from homebridge
-        elif parsed_json['characteristic'] == self.dimmer_characteristics['Switch Light State']:
+        elif parsed_json['characteristic'] == 'On':
             light_state = parsed_json['value']
             light_dimmer[dimmer_name].on_off(light_state)
         # Adjust dimmer hue if a switch hue command has come from homebridge
-        elif parsed_json['characteristic'] == self.dimmer_characteristics['Adjust Light Hue']:
+        elif parsed_json['characteristic'] == 'Hue':
             hue_value = parsed_json['value']
             light_dimmer[dimmer_name].adjust_hue(hue_value)
         # Adjust dimmer saturation if a saturation command has come from homebridge
-        elif parsed_json['characteristic'] == self.dimmer_characteristics['Adjust Light Saturation']:
+        elif parsed_json['characteristic'] == 'Saturation':
             saturation_value = parsed_json['value']
             light_dimmer[dimmer_name].adjust_saturation(saturation_value)
         else:
@@ -468,12 +950,12 @@ class HomebridgeClass(object):
         elif parsed_json['characteristic'] == 'TargetPosition':
             blind_id = parsed_json['service_name']
             # Convert blind position from a value to a string: 100 Open, 0 Closed, 50 Venetian
-            blind_position = self.blind_position_map[parsed_json['value']]
+            blind_position = self.blind_incoming_position_map[parsed_json['value']]
             window_blind[blind_name].change_blind_position(blind_id, blind_position)
-	# Ignore other buttons
+    # Ignore other buttons
         else:
             pass
-			
+            
     def process_doorbell_button(self, parsed_json):
         homebridge_json = {}
         #print('Homebridge: Process Doorbell Button', parsed_json)
@@ -482,7 +964,7 @@ class HomebridgeClass(object):
             #print('Indicator')
             time.sleep(1)
             homebridge_json['name'] = parsed_json['name']
-            homebridge_json['characteristic'] = self.doorbell_format['characteristic']
+            homebridge_json['characteristic'] = 'On'
             homebridge_json['service_name'] = parsed_json['service_name']
             homebridge_json['value'] = doorbell.status[parsed_json['service_name']]
             #print(self.outgoing_mqtt_topic, homebridge_json)
@@ -514,12 +996,13 @@ class HomebridgeClass(object):
         if parsed_json['value'] == 0: # Open garage door if it's an open door command
             garage_door.open_garage_door(parsed_json)
         else: # Ignore any other commands and set homebridge garage door button to closed state
-            homebridge_json = self.garage_door_format
+            homebridge_json = {}
             homebridge_json['value'] = 1
-            for characteristic in self.garage_door_characteristics:
-                homebridge_json['characteristic'] = self.garage_door_characteristics[characteristic]
+            characteristics = ('CurrentDoorState', 'TargetDoorState')
+            for characteristic in characteristics:
+                homebridge_json['characteristic'] = characteristic
                 client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Close Current and Target Homebridge GarageDoor
-
+ 
     def process_aircon_button(self, parsed_json, aircon_name):
         #print('Homebridge: Process Aircon Button', parsed_json)
         # Ignore the button press if it's only an indicator and reset to its pre-pressed state
@@ -529,17 +1012,16 @@ class HomebridgeClass(object):
             homebridge_json['value'] = not parsed_json['value']
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         elif self.aircon_button_type[parsed_json['service_name']] == 'Thermostat Control':
-            control = 'Undefined Characteristic'
-            for key in self.aircon_thermostat_characteristics:
-                # Determine the type of thermostat control being invoked
-                if self.aircon_thermostat_characteristics[key] == parsed_json['characteristic']:
-                    control = key
-            if control == 'Mode':
+            if parsed_json['characteristic'] == 'TargetHeatingCoolingState':
+                control = 'Mode'
                 # Set Thermostat mode if it's a mode message
                 setting = self.aircon_thermostat_mode_map[parsed_json['value']]
-            else:
+            elif parsed_json['characteristic'] == 'TargetTemperature':
+                control = 'Target Temperature'
                 # Set the thermostat target temperature
                 setting = parsed_json['value']
+            else:
+                control = 'Undefined Characteristic'
             if control != 'Undefined Characteristic':
                 # Send thermostat control and setting to the aircon object
                 thermostat_name = parsed_json['service_name'][len(aircon_name)+1:len(parsed_json['service_name'])]
@@ -629,16 +1111,16 @@ class HomebridgeClass(object):
                 air_purifier[purifier_name].set_led_brightness("4")
         else:
             print('Unknown Air Purifier Button', characteristic)
-
+        
     def process_reboot_button(self, parsed_json):
-        if parsed_json['service_name'] == self.reboot_format['service_name']:
+        if parsed_json['service_name'] == self.reboot_arm_format['service_name']:
             self.reboot_armed = parsed_json['value']
-            if self.reboot_armed == True:
+            if self.reboot_armed:
                 mgr.print_update('Reboot Armed on ')
             else:
                 mgr.print_update('Reboot Disarmed on ')
         if parsed_json['service_name'] == self.reboot_trigger_format['service_name']:
-            if self.reboot_armed == True:
+            if self.reboot_armed:
                 mgr.print_update('Reboot Armed and Triggered on ')
                 time.sleep(1)
                 self.reset_reboot_button()
@@ -652,7 +1134,7 @@ class HomebridgeClass(object):
                 self.reset_reboot_button()
                 time.sleep(1)
         if parsed_json['service_name'] == self.restart_trigger_format['service_name']:
-            if self.reboot_armed == True:
+            if self.reboot_armed:
                 mgr.print_update('Restart Armed and Triggered on ')
                 time.sleep(1)
                 self.reset_restart_button()
@@ -673,26 +1155,29 @@ class HomebridgeClass(object):
         powerpoint[powerpoint_name].on_off(switch_state)
 
     def update_temperature(self, name, temperature):
-        homebridge_json = self.temperature_format
-        if name in self.outdoor_zone: # Check to see if this is an outdoor sensor
+        homebridge_json = {}
+        homebridge_json['service'] = self.temperature_format['service']
+        homebridge_json['characteristic'] = 'CurrentTemperature'
+        if name in self.outdoor_multisensor_names: # Check to see if this is an outdoor sensor
             # The homebridge JSON name for outdoor sensors is different from the internal sensors
             homebridge_json['name'] = self.outdoor_sensors_name
         else:
-            homebridge_json['name'] = name + self.indoor_temp_name
-        homebridge_json['service_name'] = name + self.temperature_service_name_format # Add the name to the service name
+            homebridge_json['name'] = name + self.temperature_format['name']
+        homebridge_json['service_name'] = name + self.temperature_format['service_name'] # Add the name to the service name
         homebridge_json['value'] = temperature
         # Update homebridge with the current temperature
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         
     def update_thermostat_current_temperature(self, name, temperature):
         found_thermostat = False
+        homebridge_json = {}
         for aircon_name in self.aircon_config:
             if name in self.aircon_thermostat_names[aircon_name]:
                 found_thermostat = True
-                homebridge_json = self.aircon_thermostat_format[aircon_name]
                 homebridge_json['name'] = aircon_name + ' ' + name
-        if found_thermostat == True:
-            homebridge_json['characteristic'] = self.aircon_thermostat_characteristics['Current Temperature']
+                homebridge_json['service'] = 'Thermostat'
+        if found_thermostat:
+            homebridge_json['characteristic'] = 'CurrentTemperature'
             # Set the service name to the thermostat name
             homebridge_json['service_name'] = aircon_name + ' ' + name
             homebridge_json['value'] = temperature
@@ -702,52 +1187,58 @@ class HomebridgeClass(object):
             print('Thermostat name not found', name)
 
     def update_humidity(self, name, humidity):
-        homebridge_json = self.humidity_format
-        if name in self.outdoor_zone: # Check to see if this is an outdoor sensor
+        homebridge_json = {}
+        homebridge_json['service'] = self.humidity_format['service']
+        homebridge_json['characteristic'] = 'CurrentRelativeHumidity'
+        if name in self.outdoor_multisensor_names: # Check to see if this is an outdoor sensor
             # The homebridge JSON name for outdoor sensors is different from the internal sensors
             homebridge_json['name'] = self.outdoor_sensors_name
         else:
-            homebridge_json['name'] = name + self.indoor_humidity_name
-        homebridge_json['service_name'] = name + self.humidity_service_name_format # Add the humidity service name to the name
+            homebridge_json['name'] = name + self.humidity_format['name']
+        homebridge_json['service_name'] = name + self.humidity_format['service_name'] # Add the humidity service name to the name
         homebridge_json['value'] = humidity
         # Update homebridge with the current hunidity
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Update homebridge with the current humidity
 
     def update_light_level(self, name, light_level):
-        homebridge_json = self.light_level_format
-        if name in self.outdoor_zone: # Check to see if this is an outdoor sensor
+        homebridge_json = {}
+        homebridge_json['service'] = self.light_level_format['service']
+        homebridge_json['characteristic'] = 'CurrentAmbientLightLevel'
+        if name in self.outdoor_multisensor_names: # Check to see if this is an outdoor sensor
             # The homebridge JSON name for outdoor sensors is different from the internal sensors
             homebridge_json['name'] = self.outdoor_sensors_name
         else:
-            homebridge_json['name'] = name + self.indoor_light_level_name
-        homebridge_json['service_name'] = name + self.light_level_service_name_format # Add the light level service name to the name
-        if light_level == 0:
-            light_level = 0.0001 #Homebridge doesn't like zero Lux
+            homebridge_json['name'] = name + self.light_level_format['name']
+        homebridge_json['service_name'] = name + self.light_level_format['service_name']# Add the light level service name to the name
+        if light_level < 0.0001:
+            light_level = 0.0001 #HomeKit minValue is set to 0.0001 Lux
         homebridge_json['value'] = light_level
         # Update homebridge with the current light level
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
 
     def update_motion(self, name, motion_detected):
-        homebridge_json = self.motion_format
-        if name in self.outdoor_zone: # Check to see if this is an outdoor sensor
+        homebridge_json = {}
+        homebridge_json['service'] = self.motion_format['service']
+        homebridge_json['characteristic'] = 'MotionDetected'
+        if name in self.outdoor_multisensor_names: # Check to see if this is an outdoor sensor
             # The homebridge JSON name for outdoor sensors is different from the internal sensors
             homebridge_json['name'] = self.outdoor_sensors_name
         else:
-             homebridge_json['name'] = name + self.indoor_motion_name 
-        homebridge_json['service_name'] = name + self.motion_service_name_format # Add the motion service name to the name
+            homebridge_json['name'] = name + self.motion_format['name'] 
+        homebridge_json['service_name'] = name + self.motion_format['service_name'] # Add the motion service name to the name
         homebridge_json['value'] = motion_detected
         # Update homebridge with the current motion state
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         
     def update_door_state(self, door, location, door_opened, low_battery):
-        homebridge_json = self.door_state_format
+        homebridge_json = {}
         homebridge_json['name'] = location
-        homebridge_json['characteristic'] = self.door_state_characteristic
-        homebridge_json['service_name'] = door + self.door_state_service_name_format
+        homebridge_json['characteristic'] = 'ContactSensorState'
+        homebridge_json['service_name'] = door + self.door_format['name']
         homebridge_json['value'] = self.door_state_map['door_opened'][door_opened]
         # Update homebridge with the current door state
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['characteristic'] = self.door_battery_characteristic
+        homebridge_json['characteristic'] = 'StatusLowBattery'
         homebridge_json['value'] = self.door_state_map['low_battery'][low_battery]
         # Update homebridge with the current door battery state
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
@@ -757,16 +1248,16 @@ class HomebridgeClass(object):
         homebridge_json = {}
         homebridge_json['name'] = name + self.flood_state_format['name']
         homebridge_json['service'] = name + self.flood_state_format['service']
-        homebridge_json['characteristic'] = self.flood_state_characteristic
+        homebridge_json['characteristic'] = 'LeakDetected'
         homebridge_json['service_name'] = name
         homebridge_json['value'] = flooding
         # Update homebridge with the current flood state
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['characteristic'] = self.flood_battery_characteristic
+        homebridge_json['characteristic'] = 'StatusLowBattery'
         homebridge_json['value'] = low_battery
         # Update homebridge with the current flood sensor battery state
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))       
-
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        
     def update_doorbell_status(self, parsed_json, status_item):
         homebridge_json = {}
         homebridge_json['name'] = self.doorbell_homebridge_json_name_map[status_item] # Map the homebridge_json['name'] to the service
@@ -783,7 +1274,7 @@ class HomebridgeClass(object):
 
     def update_dimmer_state(self, name, dimmer_state):
         homebridge_json = {}
-        homebridge_json['characteristic'] = self.dimmer_characteristics['Switch Light State']
+        homebridge_json['characteristic'] = 'On'
         homebridge_json['name'] = name
         homebridge_json['service_name'] = name
         homebridge_json['value'] = self.dimmer_state_map[dimmer_state]
@@ -805,17 +1296,17 @@ class HomebridgeClass(object):
         homebridge_json = self.garage_door_format
         if state =='Opened':
             mgr.print_update("Garage Door Opened on ")
-            homebridge_json['characteristic'] = self.garage_door_characteristics['Current']
+            homebridge_json['characteristic'] = 'CurrentDoorState'
             homebridge_json['value'] = 0
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Send Current Garage Door Open Message to Homebridge
         elif state == 'Closing':
             mgr.print_update("Garage Door Closing on ")
-            homebridge_json['characteristic'] = self.garage_door_characteristics['Target']
+            homebridge_json['characteristic'] = 'TargetDoorState'
             homebridge_json['value'] = 1
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Send Target Garage Door Closing Message to Homebridge
         elif state == 'Closed':
             mgr.print_update("Garage Door Closed on ")
-            homebridge_json['characteristic'] = self.garage_door_characteristics['Current']
+            homebridge_json['characteristic'] = 'CurrentDoorState'
             homebridge_json['value'] = 1
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Send Current Garage Door Closed Message to Homebridge
         else:
@@ -823,35 +1314,38 @@ class HomebridgeClass(object):
                
     def set_auto_blind_override_button(self, blind_room, state):
         #print('Homebridge: Reset Auto Blind Override Button', blind_room)
-        homebridge_json = self.auto_blind_override_button_format
+        homebridge_json = {}
         homebridge_json['name'] = blind_room
+        homebridge_json['service'] = self.auto_blind_override_button_format['service']
+        homebridge_json['service_name'] = self.auto_blind_override_button_format['service_name']
+        homebridge_json['characteristic'] = 'On'                
         homebridge_json['value'] = state
         # Publish homebridge payload with button state off
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        
+                
     def update_blind_current_temps(self, blind_room, temp):
         homebridge_json = {}
         homebridge_json['name'] = blind_room
-        homebridge_json['service'] = 'Thermostat'
+        homebridge_json['service'] = self.blinds_temp_format['service']
         # Set Current Temperature Levels on both High and Low Buttons
         homebridge_json['characteristic'] = 'CurrentTemperature'
         homebridge_json['value'] = temp
-        homebridge_json['service_name'] = 'Blind High Temp'
+        homebridge_json['service_name'] = self.blinds_temp_format['high_temp_service_name']
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['service_name'] = 'Blind Low Temp'
+        homebridge_json['service_name'] = self.blinds_temp_format['low_temp_service_name']
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         self.update_blind_temp_states(blind_room) # Set Thermostat to 'Cool' for Low Temp Button and 'Heat' for High Temp Button
-		
+        
     def update_blind_target_temps(self, blind_room, high_temp, low_temp):
         homebridge_json = {}
         homebridge_json['name'] = blind_room
-        homebridge_json['service'] = 'Thermostat'
+        homebridge_json['service'] = self.blinds_temp_format['service']
         homebridge_json['characteristic'] = 'TargetTemperature'
         homebridge_json['value'] = high_temp
-        homebridge_json['service_name'] = 'Blind High Temp'
+        homebridge_json['service_name'] = self.blinds_temp_format['high_temp_service_name']
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         homebridge_json['value'] = low_temp
-        homebridge_json['service_name'] = 'Blind Low Temp'
+        homebridge_json['service_name'] = self.blinds_temp_format['low_temp_service_name']
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         self.update_blind_temp_states(blind_room) # Set Thermostat to 'Cool' for Low Temp Button and 'Heat' for High Temp Button
             
@@ -859,12 +1353,12 @@ class HomebridgeClass(object):
         # Sets Thermostat to 'Cool' for Low Temp Button and 'Heat' for High Temp Button
         homebridge_json = {}
         homebridge_json['name'] = blind_room
-        homebridge_json['service'] = 'Thermostat'
+        homebridge_json['service'] = self.blinds_temp_format['service']
         homebridge_json['characteristic'] = 'TargetHeatingCoolingState'
-        homebridge_json['service_name'] = 'Blind Low Temp'
+        homebridge_json['service_name'] = self.blinds_temp_format['low_temp_service_name']
         homebridge_json['value'] = 2
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['service_name'] = 'Blind High Temp'
+        homebridge_json['service_name'] = self.blinds_temp_format['high_temp_service_name']
         homebridge_json['value'] = 1
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
             
@@ -874,75 +1368,124 @@ class HomebridgeClass(object):
         homebridge_json['characteristic'] = 'TargetPosition'
         for blind in window_blind_config['status']:
             homebridge_json['service_name'] = blind
-            homebridge_json['value'] = self.window_blind_position_map[window_blind_config['status'][blind]]
+            homebridge_json['value'] = self.blind_outgoing_position_map[window_blind_config['status'][blind]]
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         homebridge_json['characteristic'] = 'CurrentPosition'
         for blind in window_blind_config['status']:
             homebridge_json['service_name'] = blind
-            homebridge_json['value'] = self.window_blind_position_map[window_blind_config['status'][blind]]
+            homebridge_json['value'] = self.blind_outgoing_position_map[window_blind_config['status'][blind]]
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
 
     def reset_aircon_thermostats(self, aircon_name, thermostat_status): # Called on start-up to set all Homebridge sensors to same state as the aircon's thermostat statuses and Ventilation Button to 'Off'
         # Initialise Thermostat functions
-        homebridge_json = self.aircon_thermostat_format[aircon_name]
+        homebridge_json = {}
         for name in self.aircon_thermostat_names[aircon_name]:
             homebridge_json['name'] = aircon_name + ' ' + name
             homebridge_json['service_name'] = aircon_name + ' ' + name
-            for function in self.aircon_thermostat_characteristics:
-                homebridge_json['characteristic'] = self.aircon_thermostat_characteristics[function]
-                if function == 'Mode':
-                    homebridge_json['value'] = self.aircon_thermostat_incoming_mode_map[thermostat_status[name][function]]
-                else:
-                    homebridge_json['value'] = thermostat_status[name][function]
-                client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['characteristic'] = 'TargetHeatingCoolingState'
+            homebridge_json['value'] = self.aircon_thermostat_incoming_mode_map[thermostat_status[name]['Mode']]
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['characteristic'] = 'CurrentHeatingCoolingState'
+            homebridge_json['value'] = 0
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['characteristic'] = 'CurrentTemperature'
+            homebridge_json['value'] = thermostat_status[name]['Current Temperature']
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['characteristic'] = 'TargetTemperature'
+            homebridge_json['value'] = thermostat_status[name]['Target Temperature']
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         self.reset_aircon_ventilation_button(aircon_name)
-
+            
     def reset_aircon_control_thermostat(self, aircon_name):
-        homebridge_json = self.aircon_thermostat_format[aircon_name]
-        homebridge_json['name'] = aircon_name + ' ' + self.aircon_control_thermostat_name
-        homebridge_json['service_name'] = aircon_name + ' ' + self.aircon_control_thermostat_name
-        homebridge_json['characteristic'] = self.aircon_thermostat_characteristics['Mode']
+        homebridge_json = {}
+        homebridge_json['name'] = aircon_name + ' ' + self.aircon_control_thermostat_name[aircon_name]
+        homebridge_json['service_name'] = aircon_name + ' ' + self.aircon_control_thermostat_name[aircon_name]
+        homebridge_json['characteristic'] = 'TargetHeatingCoolingState'
         homebridge_json['value'] = 0
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['characteristic'] = 'CurrentHeatingCoolingState'
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+
 
     def reset_aircon_ventilation_button(self, aircon_name):
-        homebridge_json = self.aircon_ventilation_button_format[aircon_name]
+        homebridge_json = {}
+        homebridge_json['name'] = self.aircon_ventilation_button_format[aircon_name]['name']
+        homebridge_json['service_name'] = self.aircon_ventilation_button_format[aircon_name]['service_name']
+        homebridge_json['service'] = self.aircon_ventilation_button_format[aircon_name]['service']
+        homebridge_json['characteristic'] = 'On'
         homebridge_json['value'] = False
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-
-    def reset_reboot_button(self):
-        homebridge_json = self.reboot_format
-        homebridge_json['value'] = False # Prepare to return reboot switch state to off
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json = self.reboot_trigger_format
-        homebridge_json['value'] = False # Prepare to return reboot trigger state to off
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json = self.restart_trigger_format
-        homebridge_json['value'] = False # Prepare to return restart trigger state to off
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         
-    def reset_restart_button(self):
-        homebridge_json = self.reboot_format
-        homebridge_json['value'] = False # Prepare to return reboot switch state to off
+    def reset_reboot_button(self):
+        homebridge_json = {}
+        homebridge_json['name'] = self.reboot_format['name']
+        homebridge_json['service_name'] = self.reboot_arm_format['service_name']
+        homebridge_json['service'] = self.reboot_arm_format['service']
+        homebridge_json['characteristic'] = 'On' 
+        homebridge_json['value'] = False
+        # Return reboot arm switch state to off
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json = self.restart_trigger_format
-        homebridge_json['value'] = False # Prepare to return restart trigger state to off
+        homebridge_json['service_name'] = self.reboot_trigger_format['service_name']
+        # Return reboot trigger state to off
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['service_name'] = self.restart_trigger_format['service_name']
+        # Return restart trigger state to off
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+               
+    def reset_restart_button(self):
+        homebridge_json = {}
+        homebridge_json['name'] = self.reboot_format['name']
+        homebridge_json['service_name'] = self.reboot_arm_format['service_name']
+        homebridge_json['service'] = self.reboot_arm_format['service']
+        homebridge_json['characteristic'] = 'On'
+        homebridge_json['value'] = False
+        # Return reboot arm switch state to off
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['service_name'] = self.restart_trigger_format['service_name']
+        homebridge_json['value'] = False
+        # Return restart trigger state to off
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         
     def update_aircon_status(self, aircon_name, status_item, state):
-        homebridge_json = self.aircon_status_format[aircon_name]
+        homebridge_json = {}
+        if status_item == 'Filter':
+            homebridge_json['name'] = self.aircon_filter_indicator_format[aircon_name]['name']
+        else:
+            homebridge_json['name'] = self.aircon_status_format[aircon_name]['name']
         homebridge_json['service_name'] = status_item
         if status_item == 'Damper':
+            homebridge_json['service'] = self.aircon_damper_format[aircon_name]['service']
             homebridge_json['characteristic'] = 'CurrentPosition'
             #print('Damper Day Zone is set to ' + str(state) + ' percent')
         else:
+            homebridge_json['service'] = self.aircon_remote_operation_format[aircon_name]['service']
             homebridge_json['characteristic'] = 'On'
-        if status_item == 'Filter':
-            homebridge_json['name'] = aircon_name + ' Filter'
-        else:
-            homebridge_json['name'] = aircon_name + ' Status'
         homebridge_json['value'] = state
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Update relevant aircon status
+        # Update Aircon Thermostats' current heating cooling states
+        if status_item == 'Fan' and state:
+            self.update_active_thermostat_current_states(aircon_name, 0)
+        elif status_item == 'Remote Operation' and state == False:
+            self.update_active_thermostat_current_states(aircon_name, 0)
+        elif status_item == 'Heat' and state:
+            self.update_active_thermostat_current_states(aircon_name, 1)
+        elif status_item == 'Cool' and state:
+            self.update_active_thermostat_current_states(aircon_name, 2)
+        else:
+            pass
+
+    def update_active_thermostat_current_states(self, aircon_name, heating_cooling_state): # Called by 'update_aircon_status' method to update control and active thermostat current heating cooling states
+        homebridge_json = {}
+        homebridge_json['name'] = aircon_name + ' ' + self.aircon_control_thermostat_name[aircon_name]
+        homebridge_json['service_name'] = aircon_name + ' ' + self.aircon_control_thermostat_name[aircon_name]
+        homebridge_json['characteristic'] = 'CurrentHeatingCoolingState'
+        homebridge_json['value'] = heating_cooling_state
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Update Control Thermostat
+        for thermostat in aircon[aircon_name].indoor_zone:
+            if aircon[aircon_name].thermostat_status[thermostat]['Active'] == 1:
+                homebridge_json['name'] = aircon_name + ' ' + thermostat
+                homebridge_json['service_name'] = aircon_name + ' ' + thermostat
+                client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Update Active Thermostats
 
     def set_target_damper_position(self, aircon_name, damper_percent):
         homebridge_json = self.aircon_damper_format[aircon_name]
@@ -951,32 +1494,32 @@ class HomebridgeClass(object):
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
 
     def update_aircon_thermostat(self, aircon_name, thermostat, mode):
-        homebridge_json = self.aircon_thermostat_format[aircon_name]
+        homebridge_json = {}
         homebridge_json['name'] = aircon_name + ' ' + thermostat
         homebridge_json['service_name'] = aircon_name + ' ' + thermostat
-        homebridge_json['characteristic'] = self.aircon_thermostat_characteristics['Mode']
+        homebridge_json['characteristic'] = 'TargetHeatingCoolingState'
         homebridge_json['value'] = self.aircon_thermostat_incoming_mode_map[mode]
         #print('Aircon Thermostat update', homebridge_json)
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-
+        
     def update_control_thermostat_temps(self, aircon_name, target_temp, current_temp):
-        homebridge_json = self.aircon_thermostat_format[aircon_name]
+        homebridge_json = {}
         homebridge_json['name'] = aircon_name + ' Master'
         homebridge_json['service_name'] = aircon_name + ' Master'
-        homebridge_json['characteristic'] = self.aircon_thermostat_characteristics['Target Temperature']
+        homebridge_json['characteristic'] = 'TargetTemperature'
         homebridge_json['value'] = target_temp
         #print('Aircon Control Thermostat Target Temp update', homebridge_json)
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['characteristic'] = self.aircon_thermostat_characteristics['Current Temperature']
+        homebridge_json['characteristic'] = 'CurrentTemperature'
         homebridge_json['value'] = current_temp
         #print('Aircon Control Thermostat Current Temp update', homebridge_json)
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-
+        
     def update_thermostat_target_temp(self, aircon_name, thermostat, temp):
-        homebridge_json = self.aircon_thermostat_format[aircon_name]
+        homebridge_json = {}
         homebridge_json['name'] = aircon_name + ' ' + thermostat
         homebridge_json['service_name'] = aircon_name + ' ' + thermostat
-        homebridge_json['characteristic'] = self.aircon_thermostat_characteristics['Target Temperature']
+        homebridge_json['characteristic'] = 'TargetTemperature'
         homebridge_json['value'] = temp
         #print('Update Aircon Thermostat Target Temp', homebridge_json)
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
@@ -1020,7 +1563,7 @@ class HomebridgeClass(object):
     def set_air_purifier_state(self, name, mode, fan_speed, child_lock, led_brightness, filter_status):
         #print('Updating BlueAir Homebridge Settings', name, mode, fan_speed, child_lock, led_brightness, filter_status)
         homebridge_json = {}
-        homebridge_json['name'] = name + ' ' + self.air_purifier_format['name']
+        homebridge_json['name'] = name + self.air_purifier_format['name']
         homebridge_json['service_name'] = name
         homebridge_json['characteristic'] = 'CurrentAirPurifierState'
         if mode == 'auto' or fan_speed != '0':
@@ -1088,7 +1631,6 @@ class HomebridgeClass(object):
 class DomoticzClass(object): # Manages communications to and from the z-wave objects
     def __init__(self):
         self.outgoing_mqtt_topic = 'domoticz/in'
-        self.incoming_mqtt_topic = 'domoticz/out'
         # Set up Domoticz label formats so that incoming message names can be decoded
         self.temperature_humidity_label = ' Climate'
         self.light_level_label = ' Light Level'
@@ -1275,16 +1817,16 @@ class DomoticzClass(object): # Manages communications to and from the z-wave obj
             if status_item == 'Remote Operation' and state == False:
                 domoticz_json['svalue'] = self.aircon_status_idx[aircon_name]['Mode']['Off']
                 publish = True
-            elif status_item == 'Heat' and state == True:
+            elif status_item == 'Heat' and state:
                 domoticz_json['svalue'] = self.aircon_status_idx[aircon_name]['Mode']['Heat']
                 publish = True
-            elif status_item == 'Cool' and state == True:
+            elif status_item == 'Cool' and state:
                 domoticz_json['svalue'] = self.aircon_status_idx[aircon_name]['Mode']['Cool']
                 publish = True
-            elif status_item == 'Fan' and state == True:
+            elif status_item == 'Fan' and state:
                 domoticz_json['svalue'] = self.aircon_status_idx[aircon_name]['Mode']['Fan']
                 publish = True
-        if publish == True:
+        if publish:
             client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
 
     def update_air_quality(self, name, part_2_5, co2, voc, max_aqi):
@@ -1395,10 +1937,10 @@ class DoorSensorClass(object):
             # Update homebridge with the new door state
             homebridge.update_door_state(self.door, self.location, self.current_door_opened, self.low_battery)
             # If it's a blind control door
-            if self.blind_door['Blind Control'] == True: # If it's a door that controls a blind
+            if self.blind_door['Blind Control']: # If it's a door that controls a blind
                 # Flag current door state in window_blind_config so that sunlight blind adjustments can be made
                 blind_name = self.blind_door['Blind Name']
-                if self.current_door_opened == True:
+                if self.current_door_opened:
                     door_state = 'Open'
                 else:
                     door_state = 'Closed'
@@ -1409,7 +1951,7 @@ class DoorSensorClass(object):
                 mgr.blind_control_door_changed = {'State': self.current_door_opened, 'Blind': blind_name, 'Changed': self.door_state_changed}
                 #print('Blind Control Door Opened', mgr.blind_control_door_changed)
             # Update Doorbell Door State if it's a doorbell door
-            if self.doorbell_door == True:
+            if self.doorbell_door:
                 # Send change of door state to doorbell monitor
                 doorbell.update_doorbell_door_state(self.door, self.current_door_opened)
             mgr.print_update("Updating Door Detection for " + self.door + " from " +
@@ -1444,7 +1986,7 @@ class MultisensorClass(object):
     def process_temperature_humidity(self, parsed_json):
         temperature = float(parsed_json['svalue1']) # Capture the sensor temperature reading
         # If aircon temp logging is enabled, update the temperature history for logging of aircon sensors - even if the temp hasn't changed
-        if self.name in self.aircon_temp_sensor_names and self.log_aircon_temp_data == True:
+        if self.name in self.aircon_temp_sensor_names and self.log_aircon_temp_data:
             aircon_name = self.aircon_sensor_name_aircon_map[self.name]
             aircon[aircon_name].update_temp_history(self.name, temperature)
         # Only update homebridge current temperature record if the temp changes
@@ -1473,7 +2015,7 @@ class MultisensorClass(object):
         if abs(light_level - self.sensor_types_with_value['Light Level']) >= 2: #Only update if difference is >= 2
             self.sensor_types_with_value['Light Level'] = light_level
             homebridge.update_light_level(self.name, light_level)
-            if self.blind_sensor['Blind Control'] == True: # Check if this light sensor is used to control a window blind
+            if self.blind_sensor['Blind Control']: # Check if this light sensor is used to control a window blind
                 mgr.call_room_sunlight_control = {'State': True, 'Blind': self.blind_sensor['Blind Name'], 'Light Level': light_level}
                 #print ('Triggered Blind Light Sensor', mgr.call_room_sunlight_control)            
         
@@ -1539,9 +2081,9 @@ class PowerpointClass(object):
         mgr.log_key_states("Powerpoint State Change")
 
 class GaragedoorClass(object):
-    def __init__(self, outgoing_mqtt_topic):
+    def __init__(self):
         #print ('Instantiated Garage Door', self)
-        self.garage_door_mqtt_topic = outgoing_mqtt_topic
+        self.garage_door_mqtt_topic = 'GarageControl'  
         self.garage_door_state = 'Closed'
         self.open_garage_service = 'OpenGarage'
         
@@ -1565,9 +2107,9 @@ class GaragedoorClass(object):
             homebridge.update_garage_door(self.garage_door_state)
 
 class DoorbellClass(object):
-    def __init__(self, outgoing_mqtt_topic):
+    def __init__(self):
         #print ('Instantiated Doorbell', self)
-        self.outgoing_mqtt_topic = outgoing_mqtt_topic
+        self.outgoing_mqtt_topic = 'DoorbellButton'
         # Set up Doorbell status dictionary with initial states set
         self.status = {'Terminated': False, 'Auto Possible': False, 'Triggered': False,
                         'Ringing': False, 'Idle': False, 'Automatic': False, 'Manual': False}
@@ -1607,7 +2149,7 @@ class DoorbellClass(object):
     def update_doorbell_door_state(self, door, door_opened):
         doorbell_json = {}
         doorbell_json['service'] = 'Door Status Change'
-        if door_opened == True:
+        if door_opened:
             doorbell_json['new_door_state'] = 1
         else:
             doorbell_json['new_door_state'] = 0
@@ -1703,7 +2245,7 @@ class WindowBlindClass(object):
                 self.window_blind_config['status']['Right Window'] = blind_position
                 self.window_blind_config['status']['All Doors'] = blind_position
                 self.window_blind_config['status']['All Windows'] = blind_position
-            elif blind_id == 'All Blinds' and door_blind_override == True: # Match individual blind status for windows with that of 'All Blinds' and set door blinds 'Open' if overridden
+            elif blind_id == 'All Blinds' and door_blind_override: # Match individual blind status for windows with that of 'All Blinds' and set door blinds 'Open' if overridden
                 self.window_blind_config['status']['All Blinds'] = blind_position
                 self.window_blind_config['status']['All Doors'] = 'Open'
                 self.window_blind_config['status']['Left Door'] = 'Open'
@@ -1717,14 +2259,14 @@ class WindowBlindClass(object):
             elif blind_id == 'All Doors' and door_blind_override == False: # Match individual door blind status with that of 'All Doors' if not overridden
                 self.window_blind_config['status']['Left Door'] = blind_position
                 self.window_blind_config['status']['Right Door'] = blind_position
-            elif blind_id == 'All Doors' and door_blind_override == True: # Set door blinds 'Open' if overridden
+            elif blind_id == 'All Doors' and door_blind_override: # Set door blinds 'Open' if overridden
                 self.window_blind_config['status']['All Blinds'] = 'Open'
                 self.window_blind_config['status']['All Doors'] = 'Open'
                 self.window_blind_config['status']['Left Door'] = 'Open'
                 self.window_blind_config['status']['Right Door'] = 'Open'
             else:
                 pass
-            if door_blind_override == True:
+            if door_blind_override:
                 print('Changed blind command because a door is open')
             door_blind_override = False # Reset blind override flag
             homebridge.update_blind_status(blind, self.window_blind_config)
@@ -1736,7 +2278,7 @@ class WindowBlindClass(object):
         # Called when there's a change in the blind's light sensor, doors or auto_override button
         current_temperature = multisensor[self.window_blind_config['temp sensor']].sensor_types_with_value['Temperature']
         sunny_season = self.check_season(self.window_blind_config['sunny_season_start'], self.window_blind_config['sunny_season_finish'])
-        if sunny_season == True:
+        if sunny_season:
             self.sunlight_level_3_4_persist_time = self.sunny_season_sunlight_level_3_4_persist_time
         else:
             self.sunlight_level_3_4_persist_time = self.non_sunny_season_sunlight_level_3_4_persist_time
@@ -1798,29 +2340,29 @@ class WindowBlindClass(object):
                     print_blind_change, self.blind_sunlight_position = self.set_blind_sunlight_0(door_open, door_state_changed, self.auto_override, self.blind_sunlight_position, self.auto_override_changed)
                 else:
                     pass # Invalid sunlight level              
-                if print_blind_change == True: # If there's a change in blind position
+                if print_blind_change: # If there's a change in blind position
                     mgr.print_update('Blind State Change on ')
                     if new_high_sunlight != self.current_high_sunlight: # If there's a blind position change due to sun protection state
                         print("High Sunlight Level was:", self.current_high_sunlight, "It's Now Level:", new_high_sunlight, "with a light reading of", light_level, "Lux")
-                    if door_state_changed == True: # If a change in door states, reset door state changed flags and print blind update due to door state change
+                    if door_state_changed: # If a change in door states, reset door state changed flags and print blind update due to door state change
                         for door in self.window_blind_config['blind_doors']: # Reset all door state changed flags
                             self.window_blind_config['blind_doors'][door]['door_state_changed'] = False
                         if door_open == False:
                             print('Blinds were adjusted due to door closure')
                         else:
                             print('Blinds were adjusted due to door opening')
-                    if temp_passed_threshold == True:
+                    if temp_passed_threshold:
                         if current_blind_temp_threshold == False:
                             print('Blinds adjusted due to the outdoor temperature moving inside the defined range')
                         else:
                             print('Blinds adjusted due to an outdoor temperature moving outside the defined range')
                         print('Current Temp is', current_temperature,  'degrees. Low Temp Threshold is', self.window_blind_config['low_temp_threshold'],
                               'degrees. High Temp Threshold is', self.window_blind_config['high_temp_threshold'], 'degrees')
-                    if self.auto_override_changed == True:
+                    if self.auto_override_changed:
                         self.auto_override_changed = False # Reset auto blind override flag 
                         if self.auto_override == False:
                            print('Blinds adjusted due to auto_override being switched off')
-                    if trigger_falling_sunlight_level_2_blind_change == True:
+                    if trigger_falling_sunlight_level_2_blind_change:
                         print('Blinds Adjusted due to sunlight level falling to Level 2 and the Levels 3/4 persist time of', round(self.sunlight_level_3_4_persist_time/60,0),'minutes was exceeded')
                 else: # No blind change, just a threshold change in the blind hysteresis gaps
                     #print("High Sunlight Level Now", new_high_sunlight, "with a light reading of", light_level, "Lux and no change of blind position")
@@ -1874,14 +2416,14 @@ class WindowBlindClass(object):
         for door in self.window_blind_config['blind_doors']:
             if self.window_blind_config['blind_doors'][door]['door_state'] == 'Open':
                 all_doors_closed = False
-                if self.window_blind_config['blind_doors'][door]['door_state_changed'] == True:
+                if self.window_blind_config['blind_doors'][door]['door_state_changed']:
                     one_door_has_opened = True
-            if self.window_blind_config['blind_doors'][door]['door_state_changed'] == True:
+            if self.window_blind_config['blind_doors'][door]['door_state_changed']:
                 a_door_state_has_changed = True    
         if one_door_has_opened == True and previous_door_open == False: # One door has now been opened when all doors were previously closed
             door_state_changed = True
             door_open = True
-        elif all_doors_closed == True and a_door_state_has_changed == True: # All doors are now closed
+        elif all_doors_closed == True and a_door_state_has_changed: # All doors are now closed
             door_state_changed = True
             door_open = False
         else: # Ignore states when not all doors have been closed or a door has already been opened
@@ -1896,7 +2438,7 @@ class WindowBlindClass(object):
         print('High Sunlight Level 4 Invoked with Sunny Season', sunny_season)
         print_blind_change = False
         if auto_override == False:
-            if sunny_season == True:
+            if sunny_season:
                 if door_open == False:
                     if blind_sunlight_position != 4: # Set blinds to sunlight level 4 state if not already invoked
                         # Set right window blind to Venetian, close doors and left blind if both doors closed
@@ -1915,7 +2457,7 @@ class WindowBlindClass(object):
                         self.window_blind_config['status']['Left Door'] = 'Closed'
                         self.window_blind_config['status']['Right Door'] = 'Closed'
                         self.window_blind_config['status']['All Blinds'] = 'Closed'
-                    if door_state_changed == True: # Close door blinds when doors have been closed while in this sunlight state
+                    if door_state_changed: # Close door blinds when doors have been closed while in this sunlight state
                         print_blind_change = self.close_door_impacting_blind('All Doors')
                         self.window_blind_config['status']['All Doors'] = 'Closed'
                         self.window_blind_config['status']['Left Door'] = 'Closed'
@@ -1948,7 +2490,7 @@ class WindowBlindClass(object):
                     self.window_blind_config['status']['All Windows'] = 'Venetian'
                     self.window_blind_config['status']['All Blinds'] = 'Venetian'
                     print_blind_change = True
-                if door_open == True: # Raise all door blinds if a door is open. Caters for the case when a door blind has been manually closed when in sunlight level 4.
+                if door_open: # Raise all door blinds if a door is open. Caters for the case when a door blind has been manually closed when in sunlight level 4.
                     self.move_blind('All Doors', 'up')
                     # Set blind status to align with blind position
                     self.window_blind_config['status']['All Doors'] = 'Open'
@@ -1956,7 +2498,7 @@ class WindowBlindClass(object):
                     self.window_blind_config['status']['Right Door'] = 'Open'
                     print_blind_change = True           
             blind_sunlight_position = 4
-            if auto_override_changed == True:
+            if auto_override_changed:
                 print_blind_change = True
         else:
             #print('No Blind Change. Auto Blind Control is overridden')
@@ -1967,13 +2509,13 @@ class WindowBlindClass(object):
         print('High Sunlight Level 3 Invoked with Sunny Season', sunny_season)
         print_blind_change = False
         if auto_override == False:
-            if sunny_season == True:
+            if sunny_season:
                 if previous_high_sunlight < 3: # If this level has been reached after being in levels 0, 1 or 2
                     if door_open == False: # If both doors closed, all blinds to Venetian
                         if blind_sunlight_position < 3 and door_state_changed == False: # Set all blinds to Venetian if blinds are not aleady in positions 3 or 4
                             print_blind_change = self.all_blinds_venetian()
                             blind_sunlight_position = 3
-                        if door_state_changed == True:
+                        if door_state_changed:
                             if blind_sunlight_position <= 3: # Set door blinds to Venetian if doors have just been closed while in sunlight position 3 or lower
                                 print_blind_change = self.venetian_door_impacting_blind('All Doors')
                                 self.window_blind_config['status']['All Doors'] = 'Venetian'
@@ -1999,7 +2541,7 @@ class WindowBlindClass(object):
                             print_blind_change = True
                             blind_sunlight_position = 3
                 else: # If this level has been reached after being in level 4
-                    if door_state_changed == True: # If the door state has changed
+                    if door_state_changed: # If the door state has changed
                         if door_open == False: # Close door blinds if both doors are closed
                             print_blind_change = self.close_door_impacting_blind('All Doors')
                             self.window_blind_config['status']['All Doors'] = 'Closed'
@@ -2015,14 +2557,14 @@ class WindowBlindClass(object):
                     else: # Do nothing if there has been no change to the door state
                         pass
             else: # Ensure that door blinds are open when a door is opened and it's not in the sunny season
-                if door_open == True: # If one of the doors is now open
+                if door_open: # If one of the doors is now open
                     self.move_blind('All Doors', 'up')
                     print_blind_change = True
                     # Set blind status
                     self.window_blind_config['status']['All Doors'] = 'Open'
                     self.window_blind_config['status']['Left Door'] = 'Open'
                     self.window_blind_config['status']['Right Door'] = 'Open'
-            if auto_override_changed == True:
+            if auto_override_changed:
                 print_blind_change = True
         else:
             #print('No Blind Change. Auto Blind Control is overridden')
@@ -2042,7 +2584,7 @@ class WindowBlindClass(object):
                     print_blind_change = self.raise_all_blinds()
                 blind_sunlight_position = 2
             else: # If this level has been reached after being in levels 3 or 4
-                if sunny_season == True:
+                if sunny_season:
                     # Set all blinds to venetian state if both doors are closed with no change in state and the persist has been exceeded
                     if door_open == False and door_state_changed == False and sunlight_level_3_4_persist_time_exceeded:
                         print_blind_change = self.all_blinds_venetian()
@@ -2079,7 +2621,7 @@ class WindowBlindClass(object):
                         print_blind_change = True
                         blind_sunlight_position = 2
                     # Open door blinds if a door has just been opened, even if the persist has not been exceeded
-                    elif door_open == True and door_state_changed == True:
+                    elif door_open == True and door_state_changed:
                         self.move_blind('All Doors', 'up')
                         self.window_blind_config['status']['All Doors'] = 'Open'
                         self.window_blind_config['status']['Left Door'] = 'Open'
@@ -2092,13 +2634,13 @@ class WindowBlindClass(object):
                         print_blind_change = self.raise_all_blinds()
                         blind_sunlight_position = 2
                     else: # Ensure door blinds are raised if a door has been opened, even though the persist time has not been exceeded. Caters for manual door blind closure cases.
-                        if door_open == True and door_state_changed == True:
+                        if door_open == True and door_state_changed:
                             self.move_blind('All Doors', 'up')
                             self.window_blind_config['status']['All Doors'] = 'Open'
                             self.window_blind_config['status']['Left Door'] = 'Open'
                             self.window_blind_config['status']['Right Door'] = 'Open'
                             print_blind_change = True
-            if auto_override_changed == True:
+            if auto_override_changed:
                 print_blind_change = True
         else:
             #print('No Blind Change. Auto Blind Control is overridden')
@@ -2114,7 +2656,7 @@ class WindowBlindClass(object):
                 print_blind_change = self.all_blinds_venetian()
             else: # Raise all blinds if the outdoor temperature is within the pre-set thresholds or the doors are opened.
                 print_blind_change = self.raise_all_blinds()
-            if auto_override_changed == True:
+            if auto_override_changed:
                 print_blind_change = True
         else:
             #print('No Blind Change. Auto Blind Control is overridden')
@@ -2129,7 +2671,7 @@ class WindowBlindClass(object):
         print_blind_change = False
         if auto_override == False:
             blind_sunlight_position = 0
-            if door_open == True and door_state_changed == True: # Raise door blinds if a door is opened. Caters for the case where blinds are still set to 50% after
+            if door_open == True and door_state_changed: # Raise door blinds if a door is opened. Caters for the case where blinds are still set to 50% after
                 # sunlight moves from level 1 to level 0 because the temp is outside thresholds or blinds have been manually closed
                 #print('Opening door blinds due to a door being opened')
                 self.move_blind('All Doors', 'up')
@@ -2150,7 +2692,7 @@ class WindowBlindClass(object):
                     self.window_blind_config['status']['Right Door'] = 'Venetian'                 
                 else:
                     print_blind_change = True              
-            elif auto_override_changed == True:
+            elif auto_override_changed:
                 print_blind_change = True
             else:
                 pass
@@ -2162,7 +2704,7 @@ class WindowBlindClass(object):
     def change_auto_override(self, auto_override):
         #mgr.print_update('Auto Blind Override button pressed on ')
         self.auto_override = auto_override
-        if auto_override == True:
+        if auto_override:
             mgr.log_key_states("Sunlight Blind Auto Override Enabled")
         self.auto_override_changed = True
         
@@ -2234,7 +2776,7 @@ class WindowBlindClass(object):
                 # If the door state changed and it's now open. These parameters are set by the process_door_state_change method in the relevant door_sensor object
                 if self.window_blind_config['blind_doors'][door]['door_state_changed'] == True and self.window_blind_config['blind_doors'][door]['door_state'] == 'Open':
                     door_opened = True
-            if door_opened == True:
+            if door_opened:
                 if already_opened == False:
                     #mgr.print_update(door + ' opened while blind is closing. Door blinds now opening on ')
                     already_opened = True
@@ -2304,7 +2846,7 @@ class AirconClass(object):
         self.update_zone_temps()
         # Reset Domoticz Thermostats on start-up
         domoticz.reset_aircon_thermostats(self.name, self.thermostat_status)
-        if load_previous_aircon_effectiveness == True:
+        if load_previous_aircon_effectiveness:
             # Initialise aircon effectiveness dictionary based on previously logged data
             self.populate_starting_aircon_effectiveness()
         # Initialise aircon power dictionary based on previously logged data
@@ -2340,8 +2882,8 @@ class AirconClass(object):
 
     def process_ventilation_button(self, ventilation):
         #print('Process Aircon Ventilation Button. Ventilation:', ventilation, 'Thermo Off:', self.settings['Thermo Off'])
-        if self.settings['Thermo Off'] == True: # Aircon Ventilation setting can only be set if the aircon is in Thermo Off setting
-            if ventilation == True:
+        if self.settings['Thermo Off']: # Aircon Ventilation setting can only be set if the aircon is in Thermo Off setting
+            if ventilation:
                 self.settings['Ventilate'] = True
                 self.send_aircon_command('Ventilate')
                 self.settings['previous_aircon_mode_command'] = 'Ventilate'
@@ -2478,7 +3020,7 @@ class AirconClass(object):
                 if self.active_temperature_history[name][pointer] == 0:
                     valid_temp_history = False
             #print('Valid temp history', valid_temp_history, 'Latest Reading', self.active_temperature_history[name][0])
-            if valid_temp_history == True: #Update active temp change rate if we have 10 minutes of valid active temperatures
+            if valid_temp_history: #Update active temp change rate if we have 10 minutes of valid active temperatures
                 active_temp_change = round((self.active_temperature_history[name][0] - self.active_temperature_history[name][10])*6, 1) # calculate the temp change per hour over the past 10 minutes, given that there are two sensor reports every minute. +ve heating, -ve cooling
                 #print('Active Temp Change', active_temp_change)
                 if abs(active_temp_change - self.active_temperature_change_rate[name]) >= 0.1: #Log if there's a change in the rate
@@ -2497,7 +3039,7 @@ class AirconClass(object):
                                      'Damper Position': self.status['Damper'], 'Outdoor Temp': multisensor[self.outdoor_temp_sensor].sensor_types_with_value['Temperature']}
                     with open(self.aircon_config['Spot Temperature History Log'], 'a') as f:
                         f.write(',\n' + json.dumps(json_log_data))
-                    if self.status['Heat'] == True:
+                    if self.status['Heat']:
                         log = False
                         if self.active_temperature_change_rate[name] > self.max_heating_effectiveness[name]: # Record Maximum only
                             self.max_heating_effectiveness[name] = self.active_temperature_change_rate[name]
@@ -2519,7 +3061,7 @@ class AirconClass(object):
                             self.min_heating_effectiveness['Night'] = round(self.active_temperature_change_rate['Night'], 1)
                             log = True
                         #print("Aircon Minimum Heating Effectiveness:", min_heating_effectiveness)
-                        if log == True:
+                        if log:
                             today = datetime.now()
                             time_data = self.get_local_time()
                             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
@@ -2528,7 +3070,7 @@ class AirconClass(object):
                                               'Outdoor Temp': multisensor[self.outdoor_temp_sensor].sensor_types_with_value['Temperature']}
                             with open(self.aircon_config['Effectiveness Log'], 'a') as f:
                                 f.write(',\n' + json.dumps(json_log_data))
-                    elif self.status['Cool'] == True:
+                    elif self.status['Cool']:
                         log = False
                         if 0 - self.active_temperature_change_rate[name] > self.max_cooling_effectiveness[name]: # Record Maximum only
                             self.max_cooling_effectiveness[name] = 0 - self.active_temperature_change_rate[name]
@@ -2550,7 +3092,7 @@ class AirconClass(object):
                             self.min_cooling_effectiveness['Night'] = 0 - round(self.active_temperature_change_rate['Night'], 1)
                             log = True
                         #print("Aircon Minimum Cooling Effectiveness:", min_cooling_effectiveness)
-                        if log == True:
+                        if log:
                             today = datetime.now()
                             time_data = self.get_local_time()
                             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')       
@@ -2623,7 +3165,7 @@ class AirconClass(object):
             return non_dst
 
     def control_aircon(self):
-        if self.status['Remote Operation'] == True: # Only invoke aircon control is the aircon is under control of the Raspberry Pi
+        if self.status['Remote Operation']: # Only invoke aircon control is the aircon is under control of the Raspberry Pi
             #print ("Thermo Off Setting", self.settings)
             if self.settings['Thermo Off'] == False: # Only invoke aircon control if the control thermostat is not set to 'Off'
                 if self.settings['aircon_previous_power_mode'] == 'Off': # Start up in idle
@@ -2652,13 +3194,13 @@ class AirconClass(object):
                             # Set the temp boundaries for a mode change to provide hysteresis
                             target_temp_high = self.settings['target_temperature'] + 0.4
                             target_temp_low = self.settings['target_temperature'] - 0.4
-                            if self.settings['Thermo Heat'] == True: # If in Thermo Heat Setting
+                            if self.settings['Thermo Heat']: # If in Thermo Heat Setting
                                 #print("Thermo Heat Setting")
                                 if self.settings[temperature_key] < self.settings['target_temperature']: # If actual temp is lower than target temp, stay in heat mode, fan hi
                                     self.set_aircon_mode("Heat")
                                 if self.settings[temperature_key] > target_temp_high:# If target temperature is 0.5 degree higher than target temp, put in fan mode, lo
                                     self.set_aircon_mode("Idle")
-                            if self.settings['Thermo Cool'] == True: #If in Thermo Cool Setting
+                            if self.settings['Thermo Cool']: #If in Thermo Cool Setting
                                 #print("Thermo Cool Setting")
                                 if self.settings[temperature_key] > self.settings['target_temperature']: #if actual temp is higher than target temp, turn aircon on in cool mode, fan hi
                                     self.set_aircon_mode("Cool")
@@ -2677,7 +3219,7 @@ class AirconClass(object):
                         night_target_temp_high = self.settings['night_zone_target_temperature'] + 0.4
                         night_target_temp_low = self.settings['night_zone_target_temperature'] - 0.4 
                         if self.settings['day_zone_current_temperature'] != 1 and self.settings['night_zone_current_temperature'] != 1: # Don't do anything until the Temps are updated on startup
-                            if self.settings['Thermo Heat'] == True: # If in Thermo Heat Setting
+                            if self.settings['Thermo Heat']: # If in Thermo Heat Setting
                                 if self.settings['day_zone_current_temperature'] < self.settings['day_zone_target_temperature'] or self.settings['night_zone_current_temperature'] < self.settings['night_zone_target_temperature']: # Go into heat mode and stay there if there's gap against the target in at least one zone
                                     self.set_aircon_mode("Heat")
                                 if self.settings['day_zone_current_temperature'] > day_target_temp_high and self.settings['night_zone_current_temperature'] > night_target_temp_high: # If both zones are 0.5 degree higher than target temps, put in fan mode, lo
@@ -2688,7 +3230,7 @@ class AirconClass(object):
                                 night_zone_gap_max = round(night_target_temp_high - self.settings['night_zone_current_temperature'],1)
                                 power_mode, self.settings = self.check_power_change(self.status, self.settings, self.log_aircon_cost_data) # Check for power rate or consumption change
                                 self.set_dual_zone_damper(day_zone_gap, night_zone_gap, day_zone_gap_max, night_zone_gap_max, power_mode) # Set Damper based on gap between current and target temperatures 
-                            elif self.settings['Thermo Cool'] == True: # If in Thermo Cool Setting
+                            elif self.settings['Thermo Cool']: # If in Thermo Cool Setting
                                 if self.settings['day_zone_current_temperature'] > self.settings['day_zone_target_temperature'] or self.settings['night_zone_current_temperature'] > self.settings['night_zone_target_temperature']: # Go into cool mode and stay there if there's gap against the target in at least one zone
                                     self.set_aircon_mode("Cool")
                                 if self.settings['day_zone_current_temperature'] < day_target_temp_low and self.settings['night_zone_current_temperature'] < night_target_temp_low: # If both zones are 0.5 degree lower than target temps, put in fan mode, lo
@@ -2802,7 +3344,7 @@ class AirconClass(object):
             print('Previous ' + self.name + ' mode was', self.settings['aircon_previous_power_mode'], 'for', str(round(aircon_previous_power_mode_time_in_hours*60, 1)), 'minutes at a cost of $' + str(round(aircon_previous_cost, 2)))
             print('Total ' + self.name + ' operating cost is $'+ str(round(self.aircon_running_costs['total_cost'], 2)) + ' over ' + str(round(self.aircon_running_costs['total_hours'], 1))
                   + ' hours with an average operating cost of $' + str(round(self.total_aircon_average_cost_per_hour, 2)) + ' per hour')
-            if log_aircon_cost_data == True:
+            if log_aircon_cost_data:
                 today = datetime.now()
                 time_data = self.get_local_time()
                 time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
@@ -2820,7 +3362,7 @@ class AirconClass(object):
 
     def move_damper(self, damper_percent, power_mode, log_damper_data): # Called by 'control_aircon' to move damper to a nominated zone
         #print_update("Move Damper to " + str(damper_percent) + " percent at ")
-        if log_damper_data == True:
+        if log_damper_data:
             today = datetime.now()
             time_data = self.get_local_time()
             time_stamp = today.strftime('%A %d %B %Y @ %H:%M:%S')
@@ -2848,10 +3390,10 @@ class AirconClass(object):
                     optimal_day_zone = self.damper_balanced # Balance zones
                 elif day_zone_gap > 0 and night_zone_gap < 0: # If the Night Zone is the only zone that's passed its target temperature
                     print('Damper Algorithm: Night Zone Passed Target Temperature. Move Damper towards Day Zone')
-                    optimal_day_zone = self.settings['previous_optimal_day_zone'] + 20 # Move damper 20% towards Day Zone
+                    optimal_day_zone = self.settings['previous_optimal_day_zone'] + 50 # Move damper 50% towards Day Zone
                 elif day_zone_gap < 0 and night_zone_gap > 0: # If the Day Zone is the only zone that's passed its target temperature
                     print('Damper Algorithm: Day Zone Passed Target Temperature. Move Damper towards Night Zone')
-                    optimal_day_zone = self.settings['previous_optimal_day_zone'] - 20 # Move damper 20% towards Night Zone
+                    optimal_day_zone = self.settings['previous_optimal_day_zone'] - 50 # Move damper 50% towards Night Zone
                 else: # If both zones have passed their target temperatures or neither zone has passed its target temperature or only one zone is equal to its target temperature
                     day_proportion = day_zone_gap / (day_zone_gap + night_zone_gap)
                     night_proportion = night_zone_gap / (day_zone_gap + night_zone_gap)
@@ -2915,7 +3457,7 @@ class AirconClass(object):
             print(self.name + ' Day Temp is ' + str(self.settings['day_zone_current_temperature']) + ' Degrees. Day Target Temp is '
                   + str(self.settings['day_zone_target_temperature']) + ' Degrees. Night Temp is ' +
                   str(self.settings['night_zone_current_temperature']) + ' Degrees. Night Target Temp is ' + str(self.settings['night_zone_target_temperature']) + ' Degrees')
-            
+              
     def populate_starting_aircon_effectiveness(self):
         # Read log file
         print('Retrieving', self.name, 'Effectiveness Log File')
@@ -3070,7 +3612,7 @@ class BlueAirClass(object):
         self.max_aqi = 1
 
     def capture_readings(self): # Capture device readings
-        if self.auto == True: # Readings only come from auto units
+        if self.auto: # Readings only come from auto units
             self.readings_update_time = time.time()
             latest_data = self.device.latest()
             if (latest_data != 'BlueAir Comms Error') and (type(latest_data['datapoints'][0]) is list) and (len(latest_data['datapoints'][0]) > 6): # Capture New readings is there's valid data, otherwise, keep previous readings
@@ -3135,7 +3677,7 @@ class BlueAirClass(object):
         self.set_fan_speed('0')
 
     def manual_mode(self):
-        if self.auto == True:
+        if self.auto:
             #print('Setting Manual Mode for the', self.device.name , 'Air Purifier')
             url = self.base_url + '/device/' + self.device.uuid + '/attribute/mode/'
             header = self.device.auth_header
@@ -3144,7 +3686,7 @@ class BlueAirClass(object):
             response = self.session.post(url, headers=header, json=body)
 
     def auto_mode(self):
-        if self.auto == True:
+        if self.auto:
             #print('Setting Auto Mode for the', self.device.name , 'Air Purifier')
             url = self.base_url + '/device/' + self.device.uuid + '/attribute/mode/'
             header = self.device.auth_header
@@ -3263,13 +3805,16 @@ class SeneyeClass:
         
 if __name__ == '__main__': # This is where to overall code kicks off
     # Create a Home Manager instance
-    mgr = NorthcliffHomeManagerClass(log_aircon_cost_data = True, log_aircon_damper_data = True, log_aircon_temp_data = True, load_previous_aircon_effectiveness = True)
+    mgr = NorthcliffHomeManagerClass(log_aircon_cost_data = True, log_aircon_damper_data = True, log_aircon_temp_data = True, load_previous_aircon_effectiveness = True, perform_homebridge_config_check = False)
     # Create a Homebridge instance
-    homebridge = HomebridgeClass(mgr.homebridge_outgoing_mqtt_topic, mgr.outdoor_zone, mgr.outdoor_sensors_homebridge_name, mgr.aircon_config, mgr.auto_air_purifier_names)
+    homebridge = HomebridgeClass(mgr.outdoor_multisensor_names, mgr.outdoor_sensors_homebridge_name, mgr.aircon_config, mgr.auto_air_purifier_names,
+                                 mgr.window_blind_config, mgr.door_sensor_names_locations, mgr.light_dimmer_names_device_id, mgr.colour_light_dimmer_names, mgr.air_purifier_names,
+                                 mgr.multisensor_names, mgr.powerpoint_names_device_id, mgr.flood_sensor_names)
     # Create a Domoticz instance
     domoticz = DomoticzClass()
-    # Create Doorbell instance
-    doorbell = DoorbellClass(mgr.doorbell_outgoing_mqtt_topic)
+    if mgr.doorbell_present:
+        # Create Doorbell instance
+        doorbell = DoorbellClass()
     # Use a dictionary comprehension to create an aircon instance for each aircon.
     aircon = {aircon_name: AirconClass(aircon_name, mgr.aircon_config[aircon_name], mgr.log_aircon_cost_data,
                                       mgr.log_aircon_damper_data, mgr.log_aircon_temp_data) for aircon_name in mgr.aircon_config}
@@ -3286,10 +3831,12 @@ if __name__ == '__main__': # This is where to overall code kicks off
     powerpoint = {name: PowerpointClass(name, mgr.powerpoint_names_device_id[name], 0) for name in mgr.powerpoint_names_device_id}
     # Use a dictionary comprehension to create a flood sensor instance for each flood sensor
     flood_sensor = {name: FloodSensorClass(name) for name in mgr.flood_sensor_names}
-    # Create a Garage Door Controller instance
-    garage_door = GaragedoorClass(mgr.garage_door_outgoing_mqtt_topic)
-    # Create a Foobot instance
-    key = "<foobot_api_key>"
+    if mgr.garage_door_present:
+        # Create a Garage Door Controller instance
+        garage_door = GaragedoorClass()
+    if mgr.air_purifier_present:
+        # Create a Foobot instance
+        key = "<foobot_api_key>"
     fb = Foobot(key, "<foobot_user_name>", "<foobot_user_password>")
     air_purifier_devices = fb.devices() # Capture foobot device data
     # Use a dictionary comprehension to create an air purifier instance for each air purifier
