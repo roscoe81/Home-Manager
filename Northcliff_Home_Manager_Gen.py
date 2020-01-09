@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.22 Gen
-# Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47
+#Northcliff Home Manager - 8.25 Gen
+# Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.0
 import paho.mqtt.client as mqtt
 import struct
 import time
@@ -381,6 +381,7 @@ class HomebridgeClass(object):
         self.aircon_button_type = {'Remote Operation': 'Indicator', 'Heat': 'Indicator', 'Cool': 'Indicator', 'Fan': 'Indicator', 'Fan Hi': 'Indicator',
                                    'Fan Lo': 'Indicator', 'Heating': 'Indicator', 'Compressor': 'Indicator', 'Terminated': 'Indicator', 'Damper': 'Position Indicator',
                                    'Filter': 'Indicator', 'Malfunction': 'Indicator', 'Ventilation': 'Switch', 'Reset Effectiveness Log': 'Switch'}
+        self.aircon_damper_position_state_map = {'Closing': 0, 'Opening': 1, 'Stopped': 2}
         self.aircon_thermostat_format = {}
         self.aircon_ventilation_button_format = {}
         self.aircon_filter_indicator_format = {}
@@ -1375,7 +1376,27 @@ class HomebridgeClass(object):
             homebridge_json['service_name'] = blind
             homebridge_json['value'] = self.blind_outgoing_position_map[window_blind_config['status'][blind]]
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['characteristic'] = 'PositionState'
+        for blind in window_blind_config['status']:
+            homebridge_json['service_name'] = blind
+            homebridge_json['value'] = 2
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
 
+    def update_blind_position_state(self, blind_room, blind_id, command):
+        homebridge_json = {}
+        homebridge_json['name'] = blind_room
+        homebridge_json['characteristic'] = 'PositionState'
+        if command == 'stop':
+            homebridge_json['value'] = 0
+        elif command == 'up':
+            homebridge_json['value'] = 1
+        elif command == 'down':
+            homebridge_json['value'] = 2
+        else:
+            homebridge_json['value'] = 0
+        homebridge_json['service_name'] = blind_id
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            
     def reset_aircon_thermostats(self, aircon_name, thermostat_status): # Called on start-up to set all Homebridge sensors to same state as the aircon's thermostat statuses and Ventilation Button to 'Off'
         # Initialise Thermostat functions
         homebridge_json = {}
@@ -1446,8 +1467,9 @@ class HomebridgeClass(object):
         # Return restart trigger state to off
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         
-    def update_aircon_status(self, aircon_name, status_item, state):
+    def update_aircon_status(self, aircon_name, status_item, status, settings):
         homebridge_json = {}
+        state = status[status_item]
         if status_item == 'Filter':
             homebridge_json['name'] = self.aircon_filter_indicator_format[aircon_name]['name']
         else:
@@ -1457,40 +1479,91 @@ class HomebridgeClass(object):
             homebridge_json['service'] = self.aircon_damper_format[aircon_name]['service']
             homebridge_json['characteristic'] = 'CurrentPosition'
             #print('Damper Day Zone is set to ' + str(state) + ' percent')
+            if state == 100 or state == 0: # Update active thermostats' current heating cooling states if the damper is now either totally closed or totally opened
+                if status['Heat']:
+                    self.update_active_thermostat_current_states(aircon_name, 1, state)
+                elif status['Cool']:
+                    self.update_active_thermostat_current_states(aircon_name, 2, state)
+                else:
+                    self.update_active_thermostat_current_states(aircon_name, 0, state)
+            homebridge_json['value'] = state
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Update relevant aircon damper position
+            target_damper_position = settings['target_day_zone']
+            homebridge_json['characteristic'] = 'PositionState'
+            if state > target_damper_position:
+                homebridge_json['value'] = 0
+            elif state < target_damper_position:
+                homebridge_json['value'] = 1
+            else:
+                homebridge_json['value'] = 2
+            #print('Target Damper', target_damper_position, 'Current Damper', state, 'Value', homebridge_json['value'])
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Update relevant aircon damper position state
         else:
             homebridge_json['service'] = self.aircon_remote_operation_format[aircon_name]['service']
             homebridge_json['characteristic'] = 'On'
-        homebridge_json['value'] = state
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Update relevant aircon status
+            homebridge_json['value'] = state
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Update relevant non-damper aircon status
         # Update Aircon Thermostats' current heating cooling states
-        if status_item == 'Fan' and state:
-            self.update_active_thermostat_current_states(aircon_name, 0)
-        elif status_item == 'Remote Operation' and state == False:
-            self.update_active_thermostat_current_states(aircon_name, 0)
-        elif status_item == 'Heat' and state:
-            self.update_active_thermostat_current_states(aircon_name, 1)
-        elif status_item == 'Cool' and state:
-            self.update_active_thermostat_current_states(aircon_name, 2)
+        if ((status_item == 'Heat' and state and status['Compressor'] and status['Heating'] == False)
+            or (status_item == 'Heating' and state == False and status['Heat'] and status['Compressor'])
+            or (status_item == 'Compressor' and state == True and status['Heat'] and status['Heating'] == False)):
+            self.update_control_thermostat_current_state(aircon_name, 1) # Active Heat
+            self.update_active_thermostat_current_states(aircon_name, 1, status['Damper'])
+        elif (status_item == 'Cool' and state and status['Compressor']) or (status_item == 'Compressor' and state and status['Cool']):
+            self.update_control_thermostat_current_state(aircon_name, 2) # Active Cool
+            self.update_active_thermostat_current_states(aircon_name, 2, status['Damper'])
+        elif (status_item == 'Fan' and state or status_item == 'Remote Operation' and state == False
+              or status_item == 'Compressor' and state == False or status_item == 'Heating' and state):
+            self.update_control_thermostat_current_state(aircon_name, 0) # Not Heating or Cooling
+            self.update_active_thermostat_current_states(aircon_name, 0, status['Damper'])
         else:
             pass
+                 
 
-    def update_active_thermostat_current_states(self, aircon_name, heating_cooling_state): # Called by 'update_aircon_status' method to update control and active thermostat current heating cooling states
+    def update_control_thermostat_current_state(self, aircon_name, heating_cooling_state):
         homebridge_json = {}
         homebridge_json['name'] = aircon_name + ' ' + self.aircon_control_thermostat_name[aircon_name]
         homebridge_json['service_name'] = aircon_name + ' ' + self.aircon_control_thermostat_name[aircon_name]
         homebridge_json['characteristic'] = 'CurrentHeatingCoolingState'
         homebridge_json['value'] = heating_cooling_state
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Update Control Thermostat
-        for thermostat in aircon[aircon_name].indoor_zone:
-            if aircon[aircon_name].thermostat_status[thermostat]['Active'] == 1:
-                homebridge_json['name'] = aircon_name + ' ' + thermostat
-                homebridge_json['service_name'] = aircon_name + ' ' + thermostat
-                client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Update Active Thermostats
 
-    def set_target_damper_position(self, aircon_name, damper_percent):
+    def update_active_thermostat_current_states(self, aircon_name, heating_cooling_state, damper_position): # Called by 'update_aircon_status' method to set the active thermostats'
+        # current heating cooling states when there is a possible change required to that state
+        homebridge_json = {}
+        homebridge_json['characteristic'] = 'CurrentHeatingCoolingState'
+        for thermostat in aircon[aircon_name].indoor_zone: # Update active thermostats with current heating or cooling states unless the damp is 100% in the opposite zone. Update inactive thermostats if the state is 'off'
+            self.update_individual_thermostat_current_state(aircon_name, thermostat, heating_cooling_state, damper_position) # Update each thermostat heating cooling state
+
+    def update_individual_thermostat_current_state(self, aircon_name, thermostat, heating_cooling_state, damper_position): # Called by 'update_active_thermostat_current_states' and 'aircon.[aircon_name].set_thermostat'
+        # methods to update one thermostat heating cooling state
+        homebridge_json = {}
+        homebridge_json['characteristic'] = 'CurrentHeatingCoolingState'
+        if thermostat in aircon[aircon_name].day_zone: # Update active thermostat with current heating or cooling states unless the damp is 100% in the opposite zone. Update inactive thermostats if the state is 'off'
+            if damper_position == 0: # Don't allow heating or cooling current states for day zone thermostats if the damper is wholly in the night position
+                homebridge_json['value'] = 0
+            else:
+                homebridge_json['value'] = heating_cooling_state
+        elif thermostat in aircon[aircon_name].night_zone:
+            if damper_position == 100: # Don't allow heating or cooling current states for night zone thermostats if the damper is wholly in the day position
+                homebridge_json['value'] = 0
+            else:
+                homebridge_json['value'] = heating_cooling_state
+        else:
+            print('Error: Thermostat', thermostat, 'not allocated to either a day zone or a night zone')
+            homebridge_json['value'] = 0
+        if aircon[aircon_name].thermostat_status[thermostat]['Active'] == 1 or homebridge_json['value'] == 0:
+            homebridge_json['name'] = aircon_name + ' ' + thermostat
+            homebridge_json['service_name'] = aircon_name + ' ' + thermostat
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))   
+
+    def set_target_damper_position(self, aircon_name, damper_percent, position_state):
         homebridge_json = self.aircon_damper_format[aircon_name]
         homebridge_json['characteristic'] = 'TargetPosition'
         homebridge_json['value'] = damper_percent
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['characteristic'] = 'PositionState'
+        homebridge_json['value'] = self.aircon_damper_position_state_map[position_state]
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
 
     def update_aircon_thermostat(self, aircon_name, thermostat, mode):
@@ -2722,6 +2795,7 @@ class WindowBlindClass(object):
                                    'Blind_position': blind_position}
 
     def move_blind(self, blind_id, command):
+        homebridge.update_blind_position_state(self.blind, blind_id, command)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             blind_json = self.window_blind_config['blind commands'][command + ' ' + blind_id]
             s.connect((self.blind_ip_address, self.blind_port))
@@ -2911,7 +2985,7 @@ class AirconClass(object):
                     self.thermostat_status[thermostat_name]['Active'] = self.thermostat_mode_active_map[setting]
                     self.send_aircon_command('Off')
                     self.settings['previous_aircon_mode_command'] = 'Off'
-                    homebridge.set_target_damper_position(self.name, self.settings['target_day_zone']) # Reset Homebridge Damper position indicator when releasing control of the aircon
+                    homebridge.set_target_damper_position(self.name, self.damper_balanced, 'Stopped') # Reset Homebridge Damper position indicator when releasing control of the aircon
                 if setting == 'Heat':
                     if self.settings['indoor_zone_sensor_active'] == 1: #Only do something if at least one sensor is active
                         self.settings['Thermo Heat'] = True
@@ -2953,6 +3027,16 @@ class AirconClass(object):
             if control == 'Mode':
                 self.thermostat_status[thermostat_name]['Mode'] = setting
                 self.thermostat_status[thermostat_name]['Active'] = self.thermostat_mode_active_map[setting]
+                if setting != 'Off':
+                    if self.status['Heat'] and self.status['Compressor'] and self.status['Heating'] == False:
+                        heating_cooling_state = 1
+                    elif self.status['Cool'] and self.status['Compressor']:
+                        heating_cooling_state = 2
+                    else:
+                        heating_cooling_state = 0
+                else:
+                    heating_cooling_state = 0
+                homebridge.update_individual_thermostat_current_state(self.name, thermostat_name, heating_cooling_state, self.status['Damper']) # Update thermostat current heating cooling state in homebridge
             self.update_zone_temps() # Update the "Day", "Night" and "Indoor" Zones current temperatures with active temperature sensor readings
             indoor_control_mode = self.thermostat_status[self.control_thermostat]['Mode']
             self.update_active_thermostats(indoor_control_mode) # Ensure that active sensors have the same mode setting as the Indoor Control
@@ -2976,7 +3060,7 @@ class AirconClass(object):
                 if self.status[status_item] != parsed_json[status_item]:
                     print(status_item, 'changed from', self.status[status_item], 'to', parsed_json[status_item])
                     self.status[status_item] = parsed_json[status_item]
-                homebridge.update_aircon_status(self.name, status_item, self.status[status_item])
+                homebridge.update_aircon_status(self.name, status_item, self.status, self.settings)
                 domoticz.update_aircon_status(self.name, status_item, self.status[status_item])
                        
     def update_temp_history(self, name, temperature): # Called by a multisensor object upon a temperature reading so that temperature history can be logged
@@ -3376,8 +3460,14 @@ class AirconClass(object):
         aircon_json = {}
         aircon_json['service'] = 'Damper Percent'
         aircon_json['value'] = damper_percent
+        if damper_percent > self.status['Damper']:
+            position_state = 'Opening'
+        elif damper_percent < self.status['Damper']:
+            position_state = 'Closing'
+        else:
+            position_state = 'Stopped'
         client.publish(self.outgoing_mqtt_topic, json.dumps(aircon_json))
-        homebridge.set_target_damper_position(self.name, damper_percent)
+        homebridge.set_target_damper_position(self.name, damper_percent, position_state)
 
     def set_dual_zone_damper(self, day_zone_gap, night_zone_gap, day_zone_gap_max, night_zone_gap_max, power_mode): # Called by control_aircon in dual zone mode to set the damper to an optimal position, based on relative temperature gaps
         optimal_day_zone = self.settings['previous_optimal_day_zone'] # Start with optimal_day_zone set to the previous setting
@@ -3837,14 +3927,15 @@ if __name__ == '__main__': # This is where to overall code kicks off
     if mgr.air_purifier_present:
         # Create a Foobot instance
         key = "<foobot_api_key>"
-    fb = Foobot(key, "<foobot_user_name>", "<foobot_user_password>")
-    air_purifier_devices = fb.devices() # Capture foobot device data
-    # Use a dictionary comprehension to create an air purifier instance for each air purifier
-    air_purifier = {name: BlueAirClass(name, air_purifier_devices, mgr.air_purifier_names[name]) for name in mgr.air_purifier_names}
-    # Creat a Seneye Aquarium Sensor Instance
-    aquarium_sensor = SeneyeClass("<seneye_user_name>", "<seneye_user_password>")
+        fb = Foobot(key, "<foobot_user_name>", "<foobot_user_password>")
+        air_purifier_devices = fb.devices() # Capture foobot device data
+        # Use a dictionary comprehension to create an air purifier instance for each air purifier
+        air_purifier = {name: BlueAirClass(name, air_purifier_devices, mgr.air_purifier_names[name]) for name in mgr.air_purifier_names}
+    if mgr.aquarium_present:
+        # Create a Seneye Aquarium Sensor Instance
+        aquarium_sensor = SeneyeClass("<seneye_user_name>", "<seneye_user_password>")
     # Create and set up an mqtt instance                             
-    client = mqtt.Client('home_manager')
+    client = mqtt.Client("<mqtt client name>")
     client.on_connect = mgr.on_connect
     client.on_message = mgr.on_message
     client.connect("<mqtt broker name>", 1883, 60)
