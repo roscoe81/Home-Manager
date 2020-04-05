@@ -78,7 +78,7 @@ The Home Manager monitors and controls BlueAir air purifiers to capture air qual
 ## Seneye Aquarium Sensor Readings
 The Home Manager monitors a Seneye Aquarium Sensor to monitor ph, NH3 and Temperature Levels via the Seneye API. The readings are then sent via mqtt messages to be recorded and displayed in Domoticz.
 
-## Environment Monitor Sensor Readings
+## Environment Monitor Readings
 The [Environment Monitor](https://github.com/roscoe81/enviro-monitor) captures, displays and reports on air particles and gases. Its readings are received via mqtt messages and are recorded/displayed in Domoticz and sent to Homebridge.
 
 ## License
