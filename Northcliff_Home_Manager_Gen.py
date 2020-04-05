@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.46 - Gen
+#Northcliff Home Manager - 8.52 - Gen
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -24,6 +24,19 @@ class NorthcliffHomeManagerClass(object):
         self.perform_homebridge_config_check = perform_homebridge_config_check # Flags that a homebridge config check is to be performed on start-up
         self.home_manager_file_name = '<Your Home Manager File Path and Name>'
         self.key_state_log_file_name = '<Your Key State Log File Path and Name>'
+        self.light_dimmers_present = True # Enables Light Dimmer control
+        self.multisensors_present = True # Enable Multisensor monitoring
+        self.doorbell_present = True # Enables doorbell control
+        self.door_sensors_present = True # Enables door sensor monitoring
+        self.powerpoints_present = True # Enables powerpoint control
+        self.flood_sensors_present = True # Enables flood sensor monitoring
+        self.window_blinds_present = True # Enables window blind control
+        self.aircons_present = True # Enables aircon control
+        self.air_purifiers_present = True # Enables air purifier control
+        self.garage_door_present = True # Enables garage door control
+        self.aquarium_monitor_present = True # Enables aquarium monitoring
+        self.enviro_monitors_present = True  # Enables outdoor air quality monitoring
+        self.enable_reboot = True # Enables remote reboot function
         # List the multisensor names
         self.multisensor_names = ['Living', 'Study', 'Kitchen', 'North', 'South', 'Main', 'Rear Balcony', 'North Balcony', 'South Balcony']
         # List the outdoor sensors
@@ -62,7 +75,7 @@ class NorthcliffHomeManagerClass(object):
         self.domoticz_incoming_mqtt_topic = 'domoticz/out'
         self.doorbell_incoming_mqtt_topic = 'DoorbellStatus'
         self.garage_door_incoming_mqtt_topic = 'GarageStatus'
-        self.outdoor_air_quality_monitor_incoming_mqtt_topic = 'Outdoor EM0'
+        self.enviro_monitor_incoming_mqtt_topics = ['Outdoor EM0', 'Indoor EM1']
         # Set up the config for each window blind
         self.window_blind_config = {'Living Room Blinds': {'blind host name': '<mylink host name>', 'blind port': 44100, 'light sensor': 'South Balcony',
                                                             'temp sensor': 'North Balcony', 'sunlight threshold 0': 100,'sunlight threshold 1': 1000,
@@ -103,10 +116,8 @@ class NorthcliffHomeManagerClass(object):
         self.call_room_sunlight_control = {'State': False, 'Blind': '', 'Light Level': 100}
         # When True, flags that a blind-impacting door has been opened, referencing the relevant blind
         self.blind_control_door_changed = {'State': False, 'Blind': '', 'Changed': False}
-        self.doorbell_present = True # Enables doorbell control
         # Identify the door that controls the doorbell "Auto Possible" mode
         self.doorbell_door = 'Entry'
-        self.air_purifier_present = True # Enables air purifier control
         # Set up air purifier dictionary with names, foobot device numbers and auto/manual flag.
         self.air_purifier_names = {'Living': {'Foobot Device': 1, 'Auto': True}, 'Main': {'Foobot Device': 0, 'Auto': False}}
         self.auto_air_purifier_names = []
@@ -115,12 +126,14 @@ class NorthcliffHomeManagerClass(object):
                 self.auto_air_purifier_names.append(name)
         self.universal_air_purifier_fan_speed = 1
         self.air_purifier_linking_times = {'Start': 9, 'Stop': 20}
-        self.garage_door_present = True # Enables garage door control
-        self.aquarium_present = True # Enables aquarium monitoring
-        self.outdoor_air_quality_sensor_present = True  # Enables outdoor air quality monitoring
-        self.luftdaten_sensor_id = 0 #Replace this with your luftdaten sensor_id
-        self.aqi_monitor_capture_time = time.time()
-
+        enviro_capture_time = time.time()
+        self.enviro_config = {'Outdoor': {'mqtt Topic': 'Outdoor EM0', 'Capture Temp/Hum/Bar/Lux': True, 'Capture Time': enviro_capture_time, 'Luftdaten Sensor ID': 25667,
+                                          'Device IDs': {'P1': 784, 'P2.5': 778, 'P10': 779, 'AQI': 780, 'NH3': 781, 'Oxi': 782, 'Red': 783,
+                                                          'Temp': 840, 'Hum': 840, 'Bar': 840, 'Lux':842}},
+                              'Indoor': {'mqtt Topic': 'Indoor EM1', 'Capture Temp/Hum/Bar/Lux': True,
+                                          'Device IDs': {'P1': 789, 'P2.5': 790, 'P10': 791, 'AQI': 792, 'NH3': 795, 'Oxi': 793, 'Red': 794,
+                                                          'Temp': 839, 'Hum': 839, 'Bar': 839, 'Lux':841}}}
+        self.enable_outdoor_enviro_monitor_luftdaten_backup = True # Enable Luftdaten readings if no PM readings from outdoor Enviro Monitor
                                
     def on_connect(self, client, userdata, flags, rc):
         # Sets up the mqtt subscriptions. Subscribing in on_connect() means that if we lose the connection and reconnect then subscriptions will be renewed.
@@ -132,7 +145,8 @@ class NorthcliffHomeManagerClass(object):
         client.subscribe(self.domoticz_incoming_mqtt_topic) # Subscribe to Domoticz for access to its devices
         client.subscribe(self.doorbell_incoming_mqtt_topic) # Subscribe to the Doorbell Monitor
         client.subscribe(self.garage_door_incoming_mqtt_topic) # Subscribe to the Garage Door Controller
-        client.subscribe(self.outdoor_air_quality_monitor_incoming_mqtt_topic) # Subscribe to the Outdoor Air Quality Monitor
+        for enviro_name in self.enviro_config:
+            client.subscribe(self.enviro_config[enviro_name]['mqtt Topic']) # Subscribe to the Enviro Monitors
         for aircon_name in self.aircon_config: # Subscribe to the Aircon Controllers
             client.subscribe(self.aircon_config[aircon_name]['mqtt Topics']['Incoming'])
     
@@ -152,12 +166,15 @@ class NorthcliffHomeManagerClass(object):
             garage_door.capture_status(parsed_json) # Capture garage door status
         elif msg.topic == self.doorbell_incoming_mqtt_topic: # If coming from the Doorbell Monitor
             doorbell.capture_doorbell_status(parsed_json) # Capture doorbell status
-        elif msg.topic == self.outdoor_air_quality_monitor_incoming_mqtt_topic:
-            self.aqi_monitor_capture_time = time.time()
-            #self.print_update('Northcliff Enviro Monitor Data: ' + str(parsed_json) + ' on ')
-            aqi_monitor.capture_readings(parsed_json) # Capture outdoor air quality readings
-        else: # Test for aircon messages
+        else: # Test for enviro or aircon messages
             identified_message = False
+            for enviro_name in self.enviro_config:
+                if msg.topic == self.enviro_config[enviro_name]['mqtt Topic']: # If coming from an Enviro Monitor
+                    #self.print_update(enviro_name +  ' Northcliff Enviro Monitor Data:' + str(parsed_json) + ' on ')
+                    if enviro_name == 'Outdoor':
+                        self.enviro_config[enviro_name]['Capture Time'] = time.time()
+                    identified_message = True
+                    enviro_monitor[enviro_name].capture_readings('Enviro', parsed_json) # Capture enviro readings
             for aircon_name in self.aircon_config:
                 if msg.topic == self.aircon_config[aircon_name]['mqtt Topics']['Incoming']: # If coming from an aircon
                     identified_message = True
@@ -172,18 +189,26 @@ class NorthcliffHomeManagerClass(object):
 
     def log_key_states(self, reason):
         # Log Door, Blind and Powerpoint States
-        key_state_log = {**{'Reason': reason}, **{'Door State': {name: door_sensor[name].current_door_opened for name in self.door_sensor_names_locations}}, 
-                           **{'Powerpoint State': {name: powerpoint[name].powerpoint_state for name in self.powerpoint_names_device_id}}, 
-                           **{'Blind Status': {blind: window_blind[blind].window_blind_config['status'] for blind in self.window_blind_config}}, 
-                           **{'Blind Door State': {blind: window_blind[blind].window_blind_config['blind_doors'] for blind in self.window_blind_config}},
-                           **{'Blind High Temp': {blind: window_blind[blind].window_blind_config['high_temp_threshold'] for blind in self.window_blind_config}},
-                           **{'Blind Low Temp': {blind: window_blind[blind].window_blind_config['low_temp_threshold'] for blind in self.window_blind_config}},
-                           **{'Blind Auto Override': {blind: window_blind[blind].auto_override for blind in self.window_blind_config}}, 
-                           **{'Aircon Thermostat Status': {aircon_name: {thermostat: aircon[aircon_name].thermostat_status[thermostat]
-                                                         for thermostat in (self.aircon_config[aircon_name]['Day Zone'] + self.aircon_config[aircon_name]['Night Zone'])} for aircon_name in self.aircon_config}},
-                           **{'Aircon Thermo Mode': {aircon_name: aircon[aircon_name].settings['indoor_thermo_mode'] for aircon_name in self.aircon_config}}, 
-                           **{'Aircon Thermo Active': {aircon_name: aircon[aircon_name].settings['indoor_zone_sensor_active'] for aircon_name in self.aircon_config}},
-                           **{'Air Purifier Max Co2': {air_purifier_name: air_purifier[air_purifier_name].max_co2 for air_purifier_name in self.auto_air_purifier_names}}}
+        key_state_log = {}
+        key_state_log["Reason"] = reason
+        if self.door_sensors_present:
+            key_state_log["Door State"] = {name: door_sensor[name].current_door_opened for name in self.door_sensor_names_locations}
+        if self.powerpoints_present:
+            key_state_log['Powerpoint State'] = {name: powerpoint[name].powerpoint_state for name in self.powerpoint_names_device_id}
+        if self.window_blinds_present:
+            key_state_log['Blind Status'] = {blind: window_blind[blind].window_blind_config['status'] for blind in self.window_blind_config}
+            key_state_log['Blind Door State'] = {blind: window_blind[blind].window_blind_config['blind_doors'] for blind in self.window_blind_config}
+            key_state_log['Blind High Temp'] = {blind: window_blind[blind].window_blind_config['high_temp_threshold'] for blind in self.window_blind_config}
+            key_state_log['Blind Low Temp'] = {blind: window_blind[blind].window_blind_config['low_temp_threshold'] for blind in self.window_blind_config}
+            key_state_log['Blind Auto Override'] = {blind: window_blind[blind].auto_override for blind in self.window_blind_config}
+        if self.aircons_present:
+            key_state_log['Aircon Thermostat Status'] = {aircon_name: {thermostat: aircon[aircon_name].thermostat_status[thermostat]
+                                                         for thermostat in (self.aircon_config[aircon_name]['Day Zone'] +
+                                                                            self.aircon_config[aircon_name]['Night Zone'])} for aircon_name in self.aircon_config}
+            key_state_log['Aircon Thermo Mode'] = {aircon_name: aircon[aircon_name].settings['indoor_thermo_mode'] for aircon_name in self.aircon_config}
+            key_state_log['Aircon Thermo Active'] = {aircon_name: aircon[aircon_name].settings['indoor_zone_sensor_active'] for aircon_name in self.aircon_config}
+        if self.air_purifiers_present:
+            key_state_log['Air Purifier Max Co2'] = {air_purifier_name: air_purifier[air_purifier_name].max_co2 for air_purifier_name in self.auto_air_purifier_names}            
         with open(self.key_state_log_file_name, 'w') as f:
             f.write(json.dumps(key_state_log))   
 
@@ -193,36 +218,41 @@ class NorthcliffHomeManagerClass(object):
         parsed_key_states = json.loads(f.read())
         print('Retrieved Key States', parsed_key_states)
         print ('Previous logging reason was', parsed_key_states['Reason'])
-        for name in parsed_key_states['Door State']:
-            door_sensor[name].current_door_opened = parsed_key_states['Door State'][name]
-            door_sensor[name].previous_door_opened = parsed_key_states['Door State'][name]
-            homebridge.update_door_state(name, self.door_sensor_names_locations[name], parsed_key_states['Door State'][name], False)
-            if door_sensor[name].doorbell_door:
-                doorbell.update_doorbell_door_state(self.doorbell_door, parsed_key_states['Door State'][name])
-        for blind in parsed_key_states['Blind Status']:
-            window_blind[blind].window_blind_config['status'] = parsed_key_states['Blind Status'][blind]
-            homebridge.update_blind_status(blind, window_blind[blind].window_blind_config)
-            window_blind[blind].window_blind_config['blind_doors'] = parsed_key_states['Blind Door State'][blind]
-            window_blind[blind].window_blind_config['high_temp_threshold'] = parsed_key_states['Blind High Temp'][blind]
-            window_blind[blind].window_blind_config['low_temp_threshold'] = parsed_key_states['Blind Low Temp'][blind]
-            homebridge.update_blind_target_temps(blind, parsed_key_states['Blind High Temp'][blind], parsed_key_states['Blind Low Temp'][blind])
-            window_blind[blind].auto_override = parsed_key_states['Blind Auto Override'][blind]
-            homebridge.set_auto_blind_override_button(blind, parsed_key_states['Blind Auto Override'][blind])
-        for name in parsed_key_states['Powerpoint State']:
-            powerpoint[name].on_off(parsed_key_states['Powerpoint State'][name])
-            homebridge.update_powerpoint_state(name, parsed_key_states['Powerpoint State'][name])
-        for aircon_name in self.aircon_config:
-            for thermostat in parsed_key_states['Aircon Thermostat Status'][aircon_name]:
-                aircon[aircon_name].thermostat_status[thermostat]['Target Temperature'] = parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Target Temperature']
-                homebridge.update_thermostat_target_temp(aircon_name, thermostat, parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Target Temperature'])
-                aircon[aircon_name].thermostat_status[thermostat]['Mode'] = parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Mode']
-                homebridge.update_aircon_thermostat(aircon_name, thermostat, parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Mode'])
-                aircon[aircon_name].thermostat_status[thermostat]['Active'] = parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Active']
-            aircon[aircon_name].settings['indoor_thermo_mode'] = parsed_key_states['Aircon Thermo Mode'][aircon_name]
-            aircon[aircon_name].settings['indoor_zone_sensor_active'] = parsed_key_states['Aircon Thermo Active'][aircon_name]
-            aircon[aircon_name].update_zone_temps()
-        for air_purifier_name in parsed_key_states['Air Purifier Max Co2']:
-            air_purifier[air_purifier_name].max_co2 = parsed_key_states['Air Purifier Max Co2'][air_purifier_name]
+        if self.door_sensors_present:
+            for name in parsed_key_states['Door State']:
+                door_sensor[name].current_door_opened = parsed_key_states['Door State'][name]
+                door_sensor[name].previous_door_opened = parsed_key_states['Door State'][name]
+                homebridge.update_door_state(name, self.door_sensor_names_locations[name], parsed_key_states['Door State'][name], False)
+                if door_sensor[name].doorbell_door:
+                    doorbell.update_doorbell_door_state(self.doorbell_door, parsed_key_states['Door State'][name])
+        if self.window_blinds_present:
+            for blind in parsed_key_states['Blind Status']:
+                window_blind[blind].window_blind_config['status'] = parsed_key_states['Blind Status'][blind]
+                homebridge.update_blind_status(blind, window_blind[blind].window_blind_config)
+                window_blind[blind].window_blind_config['blind_doors'] = parsed_key_states['Blind Door State'][blind]
+                window_blind[blind].window_blind_config['high_temp_threshold'] = parsed_key_states['Blind High Temp'][blind]
+                window_blind[blind].window_blind_config['low_temp_threshold'] = parsed_key_states['Blind Low Temp'][blind]
+                homebridge.update_blind_target_temps(blind, parsed_key_states['Blind High Temp'][blind], parsed_key_states['Blind Low Temp'][blind])
+                window_blind[blind].auto_override = parsed_key_states['Blind Auto Override'][blind]
+                homebridge.set_auto_blind_override_button(blind, parsed_key_states['Blind Auto Override'][blind])
+        if self.powerpoints_present:
+            for name in parsed_key_states['Powerpoint State']:
+                powerpoint[name].on_off(parsed_key_states['Powerpoint State'][name])
+                homebridge.update_powerpoint_state(name, parsed_key_states['Powerpoint State'][name])
+        if self.aircons_present:
+            for aircon_name in self.aircon_config:
+                for thermostat in parsed_key_states['Aircon Thermostat Status'][aircon_name]:
+                    aircon[aircon_name].thermostat_status[thermostat]['Target Temperature'] = parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Target Temperature']
+                    homebridge.update_thermostat_target_temp(aircon_name, thermostat, parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Target Temperature'])
+                    aircon[aircon_name].thermostat_status[thermostat]['Mode'] = parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Mode']
+                    homebridge.update_aircon_thermostat(aircon_name, thermostat, parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Mode'])
+                    aircon[aircon_name].thermostat_status[thermostat]['Active'] = parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Active']
+                aircon[aircon_name].settings['indoor_thermo_mode'] = parsed_key_states['Aircon Thermo Mode'][aircon_name]
+                aircon[aircon_name].settings['indoor_zone_sensor_active'] = parsed_key_states['Aircon Thermo Active'][aircon_name]
+                aircon[aircon_name].update_zone_temps()
+        if self.air_purifiers_present:
+            for air_purifier_name in parsed_key_states['Air Purifier Max Co2']:
+                air_purifier[air_purifier_name].max_co2 = parsed_key_states['Air Purifier Max Co2'][air_purifier_name]
 
     def air_purifier_linking_hour(self):
         today = datetime.now()
@@ -252,26 +282,30 @@ class NorthcliffHomeManagerClass(object):
                 homebridge.check_and_fix_config() 
             # Retrieve logged key states
             self.retrieve_key_states()
-            homebridge.reset_reboot_button()
-            # Capture Air Purifier readings and settings on startup and update homebridge
-            for name in self.air_purifier_names:
-                if self.air_purifier_names[name]['Auto']: # Readings only come from auto units
-                    self.purifier_readings_update_time, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold, part_2_5_threshold = air_purifier[name].capture_readings()
-                    homebridge.update_air_quality(name, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold, part_2_5_threshold)
-                    domoticz.update_air_quality(name, part_2_5, co2, voc, max_aqi)
-                settings_changed, self.purifier_settings_update_time, mode, fan_speed, child_lock, led_brightness,filter_status = air_purifier[name].capture_settings()
-                homebridge.set_air_purifier_state(name, mode, fan_speed, child_lock, led_brightness, filter_status)    
-            # Start up Aircons
-            for aircon_name in mgr.aircon_config:
-                aircon[aircon_name].start_up(self.load_previous_aircon_effectiveness)
-            if self.doorbell_present:
-                doorbell.update_doorbell_status() # Get doorbell status on startup
-            # Initialise multisensor readings on homebridge to start-up settings
-            for name in self.multisensor_names:    
-                homebridge.update_temperature(name, multisensor[name].sensor_types_with_value['Temperature'])
-                homebridge.update_humidity(name, multisensor[name].sensor_types_with_value['Humidity'])
-                homebridge.update_light_level(name, multisensor[name].sensor_types_with_value['Light Level'])
-                homebridge.update_motion(name, multisensor[name].sensor_types_with_value['Motion'])
+            if self.enable_reboot:
+                homebridge.reset_reboot_button()
+            if self.air_purifiers_present:
+                # Capture Air Purifier readings and settings on startup and update homebridge
+                for name in self.air_purifier_names:
+                    if self.air_purifier_names[name]['Auto']: # Readings only come from auto units
+                        self.purifier_readings_update_time, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold, part_2_5_threshold = air_purifier[name].capture_readings()
+                        homebridge.update_blueair_aqi(name, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold, part_2_5_threshold)
+                        domoticz.update_blueair_aqi(name, part_2_5, co2, voc, max_aqi)
+                    settings_changed, self.purifier_settings_update_time, mode, fan_speed, child_lock, led_brightness,filter_status = air_purifier[name].capture_settings()
+                    homebridge.set_air_purifier_state(name, mode, fan_speed, child_lock, led_brightness, filter_status)    
+            if self.aircons_present:
+                # Start up Aircons
+                for aircon_name in mgr.aircon_config:
+                    aircon[aircon_name].start_up(self.load_previous_aircon_effectiveness)
+                if self.doorbell_present:
+                    doorbell.update_doorbell_status() # Get doorbell status on startup
+            if self.multisensors_present:
+                # Initialise multisensor readings on homebridge to start-up settings
+                for name in self.multisensor_names:    
+                    homebridge.update_temperature(name, multisensor[name].sensor_types_with_value['Temperature'])
+                    homebridge.update_humidity(name, multisensor[name].sensor_types_with_value['Humidity'])
+                    homebridge.update_light_level(name, multisensor[name].sensor_types_with_value['Light Level'])
+                    homebridge.update_motion(name, multisensor[name].sensor_types_with_value['Motion'])
             # Initialise Garage Door state
             if self.garage_door_present:
                 homebridge.update_garage_door('Closing')
@@ -280,36 +314,38 @@ class NorthcliffHomeManagerClass(object):
             previous_aquarium_reading_time = 0 # Initialise aquarium sensor reading time
             previous_luftdaten_capture_time = 0 # Initialise luftdaten capture time
             while True: # The main Home Manager Loop
-                for aircon_name in mgr.aircon_config:
-                    aircon[aircon_name].control_aircon() # For each aircon, call the method that controls the aircon.
-                # The following tests and method calls are here in the main code loop, rather than the on_message method to avoid time.sleep calls in the window blind object delaying incoming mqtt message handling
-                if self.call_room_sunlight_control['State']: # If there's a new reading from the blind control light sensor
-                    blind = self.call_room_sunlight_control['Blind'] # Identify the blind
-                    light_level = self.call_room_sunlight_control['Light Level'] # Capture the light level
-                    window_blind[blind].room_sunlight_control(light_level) # Call the blind's sunlight control method, passing the light level
-                    self.call_room_sunlight_control['State'] = False # Reset this flag because any light level update has now been actioned
-                if self.blind_control_door_changed['Changed']: # If a blind control door has changed state
-                    blind = self.blind_control_door_changed['Blind'] # Identify the blind that is controlled by the door
-                    light_level = self.call_room_sunlight_control['Light Level'] # Capture the light level
-                    window_blind[blind].room_sunlight_control(light_level) # Call the blind's sunlight control method, passing the light level
-                    self.blind_control_door_changed['Changed'] = False # Reset Door Changed Flag because any change of door state has now been actioned
-                if self.auto_blind_override_changed['Changed']: # If a blind auto override button has changed state
-                    blind = self.auto_blind_override_changed['Blind'] # Identify the blind that is controlled by the button
-                    light_level = self.call_room_sunlight_control['Light Level'] # Capture the light level
-                    window_blind[blind].room_sunlight_control(light_level) # Call the blind's sunlight control method, passing the light level
-                    self.auto_blind_override_changed['Changed'] = False # Reset Auto Override Flag because any change of override state has now been actioned
-                if self.call_control_blinds['State']: # If a manual blind change has been invoked
-                    blind = self.call_control_blinds['Blind'] # Identify the blind that has been changed
-                    window_blind[blind].control_blinds(blind, self.call_control_blinds) # Call the blind's manual control method
-                    self.call_control_blinds['State'] = False # Reset Control Blinds Flag because any control blind request has now been actioned
-                if self.air_purifier_present:
+                if self.aircons_present:
+                    for aircon_name in mgr.aircon_config:
+                        aircon[aircon_name].control_aircon() # For each aircon, call the method that controls the aircon.
+                if self.window_blinds_present:
+                    # The following tests and method calls are here in the main code loop, rather than the on_message method to avoid time.sleep calls in the window blind object delaying incoming mqtt message handling
+                    if self.call_room_sunlight_control['State']: # If there's a new reading from the blind control light sensor
+                        blind = self.call_room_sunlight_control['Blind'] # Identify the blind
+                        light_level = self.call_room_sunlight_control['Light Level'] # Capture the light level
+                        window_blind[blind].room_sunlight_control(light_level) # Call the blind's sunlight control method, passing the light level
+                        self.call_room_sunlight_control['State'] = False # Reset this flag because any light level update has now been actioned
+                    if self.blind_control_door_changed['Changed']: # If a blind control door has changed state
+                        blind = self.blind_control_door_changed['Blind'] # Identify the blind that is controlled by the door
+                        light_level = self.call_room_sunlight_control['Light Level'] # Capture the light level
+                        window_blind[blind].room_sunlight_control(light_level) # Call the blind's sunlight control method, passing the light level
+                        self.blind_control_door_changed['Changed'] = False # Reset Door Changed Flag because any change of door state has now been actioned
+                    if self.auto_blind_override_changed['Changed']: # If a blind auto override button has changed state
+                        blind = self.auto_blind_override_changed['Blind'] # Identify the blind that is controlled by the button
+                        light_level = self.call_room_sunlight_control['Light Level'] # Capture the light level
+                        window_blind[blind].room_sunlight_control(light_level) # Call the blind's sunlight control method, passing the light level
+                        self.auto_blind_override_changed['Changed'] = False # Reset Auto Override Flag because any change of override state has now been actioned
+                    if self.call_control_blinds['State']: # If a manual blind change has been invoked
+                        blind = self.call_control_blinds['Blind'] # Identify the blind that has been changed
+                        window_blind[blind].control_blinds(blind, self.call_control_blinds) # Call the blind's manual control method
+                        self.call_control_blinds['State'] = False # Reset Control Blinds Flag because any control blind request has now been actioned
+                if self.air_purifiers_present:
                     purifier_readings_check_time = time.time()
                     if (purifier_readings_check_time - self.purifier_readings_update_time) >= 300: # Update air purifier readings if last update was >= 5 minutes ago
                         for name in self.air_purifier_names:
                             if self.air_purifier_names[name]['Auto']:# Readings only come from auto units
                                 self.purifier_readings_update_time, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold, part_2_5_threshold = air_purifier[name].capture_readings()
-                                homebridge.update_air_quality(name, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold, part_2_5_threshold)
-                                domoticz.update_air_quality(name, part_2_5, co2, voc, max_aqi)
+                                homebridge.update_blueair_aqi(name, part_2_5, co2, voc, max_aqi, max_co2, co2_threshold, part_2_5_threshold)
+                                domoticz.update_blueair_aqi(name, part_2_5, co2, voc, max_aqi)
                     purifier_settings_check_time = time.time()
                     if (purifier_settings_check_time - self.purifier_settings_update_time) >= 5: # Update air purifier settings if last update was >= 5 seconds ago
                         for name in self.air_purifier_names:
@@ -321,7 +357,7 @@ class NorthcliffHomeManagerClass(object):
                                         self.universal_air_purifier_fan_speed = fan_speed
                                         if self.air_purifier_linking_hour():
                                             self.update_manual_air_purifier_fan_speeds(name, fan_speed)
-                if self.aquarium_present:
+                if self.aquarium_monitor_present:
                     if time.time() - previous_aquarium_capture_time > 600: # Capture aquarium reading every 10 minutes
                         print('Aquarium Capture Time:', datetime.fromtimestamp(time.time()).strftime('%A %d %B %Y @ %H:%M:%S'))
                         valid_aquarium_reading, message, ph, temp, nh3, reading_time =  aquarium_sensor.latest() # Capture Seneye device readings
@@ -334,18 +370,19 @@ class NorthcliffHomeManagerClass(object):
                         else:
                             print('Seneye Message Ignored: Comms Error') # Ignore bad Seneye comms messages
                         previous_aquarium_capture_time = time.time()
-                if time.time() - self.aqi_monitor_capture_time > 300: # Capture Luftdaten Air Quality of the Northcliff AQI Monitor is unavailable
-                    if time.time() - previous_luftdaten_capture_time > 900:
-                        print('No message from Northcliff AQI Monitor, using Luftdaten from station', self.luftdaten_sensor_id)
-                        aqi_monitor.capture_luftdaten_data(self.luftdaten_sensor_id)
-                        previous_luftdaten_capture_time = time.time()
+                if self.enviro_monitors_present and self.enable_outdoor_enviro_monitor_luftdaten_backup:
+                    if time.time() - self.enviro_config['Outdoor']['Capture Time'] > 300: # Capture Luftdaten Air Quality if the Outdoor Enviro Monitor is unavailable
+                        if time.time() - previous_luftdaten_capture_time > 900:
+                            print('No message from Outdoor Northcliff Enviro Monitor, using Luftdaten from station', self.enviro_config['Outdoor']['Luftdaten Sensor ID'])
+                            enviro_monitor['Outdoor'].capture_luftdaten_data(self.enviro_config['Outdoor']['Luftdaten Sensor ID'])
+                            previous_luftdaten_capture_time = time.time()
                         
         except KeyboardInterrupt:
             self.shutdown('Keyboard Interrupt')
 
 class HomebridgeClass(object):
     def __init__(self, outdoor_multisensor_names, outdoor_sensors_name, aircon_config, auto_air_purifier_names, window_blind_config, door_sensor_names_locations,
-                  light_dimmer_names_device_id, colour_light_dimmer_names, air_purifier_names, multisensor_names, powerpoint_names_device_id, flood_sensor_names):
+                  light_dimmer_names_device_id, colour_light_dimmer_names, air_purifier_names, multisensor_names, powerpoint_names_device_id, flood_sensor_names, enviro_config):
         #print ('Instantiated Homebridge', self)
         self.outgoing_mqtt_topic = 'homebridge/to/set'
         self.outgoing_config_mqtt_topic = 'homebridge/to/get'
@@ -452,21 +489,32 @@ class HomebridgeClass(object):
         self.air_quality_format = {'name': ' Air Quality', 'service_name': ' Air Quality', 'service': 'AirQualitySensor', 'characteristics_properties': {'PM2_5Density': {}, 'VOCDensity': {}}}
         self.CO2_level_format = {'name': ' CO2', 'service_name': ' CO2', 'service' :'CarbonDioxideSensor', 'characteristics_properties': {'CarbonDioxideLevel': {}, 'CarbonDioxidePeakLevel': {}}}
         self.PM2_5_alert_format = {'name': ' PM2.5 Alert', 'service_name': ' PM2.5 Alert', 'service' :'MotionSensor', 'characteristics_properties': {'MotionDetected':{}}}
-        self.air_quality_service_name_map = {name: name + self.air_quality_format['name'] for name in self.auto_air_purifier_names}
-        self.CO2_service_name_map = {name: name + self.CO2_level_format['name'] for name in self.auto_air_purifier_names}
-        self.PM2_5_service_name_map = {name: name + self.PM2_5_alert_format['name'] for name in self.auto_air_purifier_names}
+        #self.air_quality_service_name_map = {name: name + self.air_quality_format['name'] for name in self.auto_air_purifier_names}
+        #self.CO2_service_name_map = {name: name + self.CO2_level_format['name'] for name in self.auto_air_purifier_names}
+        #self.PM2_5_service_name_map = {name: name + self.PM2_5_alert_format['name'] for name in self.auto_air_purifier_names}
         # Set up reboot
         self.reboot_format = {'name': 'Reboot'}
         self.reboot_arm_format = {'service_name': 'Reboot Arm', 'service': 'Switch', 'characteristics_properties': {}}
         self.reboot_trigger_format = {'service_name': 'Reboot Trigger', 'service': 'Switch', 'characteristics_properties': {}}
         self.restart_trigger_format = {'service_name': 'Restart Trigger', 'service': 'Switch', 'characteristics_properties': {}}
         self.reboot_armed = False
-        # Set up outdoor air quality monitor
-        self.outdoor_aqi_format = {'name': 'Outdoor AQI', 'service_name': 'Outdoor AQI', 'service': 'AirQualitySensor',
+        # Set up Enviro Monitors
+        self.enviro_config = enviro_config
+        self.enviro_aqi_format = {'name': ' AQI', 'service_name': ' AQI', 'service': 'AirQualitySensor',
                                    'characteristics_properties': {'PM10Density': {}, 'PM2_5Density': {}, 'NitrogenDioxideDensity': {}}}
-        self.outdoor_reducing_format = {'name': 'Outdoor Reducing', 'service_name': 'Outdoor Reducing', 'service': 'AirQualitySensor', 'characteristics_properties': {'NitrogenDioxideDensity': {}}}
-        self.outdoor_ammonia_format = {'name': 'Outdoor Ammonia', 'service_name': 'Outdoor Ammonia', 'service': 'AirQualitySensor', 'characteristics_properties': {'NitrogenDioxideDensity': {}}}
-        self.outdoor_PM2_5_alert_format = {'name': 'Outdoor PM2.5 Alert', 'service_name': 'Outdoor PM2.5 Alert', 'service' :'MotionSensor', 'characteristics_properties': {'MotionDetected':{}}}
+        self.enviro_reducing_format = {'name': ' Reducing', 'service_name': ' Reducing', 'service': 'AirQualitySensor', 'characteristics_properties': {'NitrogenDioxideDensity': {}}}
+        self.enviro_ammonia_format = {'name': ' Ammonia', 'service_name': ' Ammonia', 'service': 'AirQualitySensor', 'characteristics_properties': {'NitrogenDioxideDensity': {}}}
+        self.enviro_PM2_5_alert_format = {'name': ' PM2.5 Alert', 'service_name': ' PM2.5 Alert', 'service' :'MotionSensor', 'characteristics_properties': {'MotionDetected':{}}}
+        #self.enviro_aqi_service_name_map = {name: name + self.enviro_aqi_format['name'] for name in self.enviro_config}
+        #self.enviro_reducing_service_name_map = {name: name + self.enviro_reducing_format['name'] for name in self.enviro_config}
+        #self.enviro_ammonia_service_name_map = {name: name + self.enviro_ammonia_format['name'] for name in self.enviro_config}
+        #self.enviro_PM2_5_service_name_map = {name: name + self.enviro_PM2_5_alert_format['name'] for name in self.enviro_config}
+        self.enviro_temp_format = {'name': ' Env Temp', 'service': 'TemperatureSensor', 'service_name': ' Env Temp', 'characteristics_properties': {}}
+        self.enviro_hum_format = {'name': ' Env Hum', 'service': 'HumiditySensor', 'service_name': ' Env Hum', 'characteristics_properties': {}}
+        self.enviro_lux_format = {'name': ' Env Lux', 'service': 'LightSensor', 'service_name': ' Env Lux', 'characteristics_properties': {}}
+        #self.enviro_temp_service_name_map = {name: name + self.enviro_temp_format['name'] for name in self.enviro_config}
+        
+
         # Set up config
         self.current_config = {}
         self.ack_cache = {}
@@ -565,82 +613,96 @@ class HomebridgeClass(object):
 
     def indentify_required_homebridge_config(self):
         # Blinds
-        blinds_homebridge_config = {blinds: {**{blind: {self.blinds_format['service']: self.blinds_format['characteristics_properties']} for blind in self.window_blind_config[blinds]['status']},
+        if mgr.window_blinds_present:
+            blinds_homebridge_config = {blinds: {**{blind: {self.blinds_format['service']: self.blinds_format['characteristics_properties']} for blind in self.window_blind_config[blinds]['status']},
                                              **{self.blinds_temp_format['high_temp_service_name']: {self.blinds_temp_format['service']: self.blinds_temp_format['high_temperature_characteristics_properties']},
                                               self.blinds_temp_format['low_temp_service_name']: {self.blinds_temp_format['service']: self.blinds_temp_format['low_temperature_characteristics_properties']},
                                               self.auto_blind_override_button_format['service_name']: {self.auto_blind_override_button_format['service']: self.auto_blind_override_button_format['characteristics_properties']}}}
                                     for blinds in self.window_blind_config}
+        else:
+            blinds_homebridge_config = {}
         # Doors
-        door_sensor_rooms = []
-        for door in self.door_sensor_names_locations:
-            if self.door_sensor_names_locations[door] not in door_sensor_rooms:
-                door_sensor_rooms.append(self.door_sensor_names_locations[door]) # Create a list of rooms with door sensors to create accessory names
-        door_sensor_homebridge_config = {room: {} for room in door_sensor_rooms} # Make an accessory name key for each door sensor room
-        for room in door_sensor_rooms: # Iterate through the list of rooms with door sensors
+        if mgr.door_sensors_present:
+            door_sensor_rooms = []
             for door in self.door_sensor_names_locations:
-                if self.door_sensor_names_locations[door] == room: # Add the door sensor to the relevant room
-                    door_sensor_homebridge_config[room][door + self.door_format['service_name']] = {self.door_format['service']: self.door_format['characteristics_properties']}
-        
+                if self.door_sensor_names_locations[door] not in door_sensor_rooms:
+                    door_sensor_rooms.append(self.door_sensor_names_locations[door]) # Create a list of rooms with door sensors to create accessory names
+            door_sensors_homebridge_config = {room: {} for room in door_sensor_rooms} # Make an accessory name key for each door sensor room
+            for room in door_sensor_rooms: # Iterate through the list of rooms with door sensors
+                for door in self.door_sensor_names_locations:
+                    if self.door_sensor_names_locations[door] == room: # Add the door sensor to the relevant room
+                        door_sensors_homebridge_config[room][door + self.door_format['service_name']] = {self.door_format['service']: self.door_format['characteristics_properties']}
+        else:
+            door_sensors_homebridge_config = {}
         # Garage
         if mgr.garage_door_present == True:
             garage_door_homebridge_config = {self.garage_door_format['name']: {self.garage_door_format['service_name']: {self.garage_door_format['service']: self.garage_door_format['characteristics_properties']}}}
         else:
             garage_door_homebridge_config = {}    
         # Reboot
-        reboot_homebridge_config = {self.reboot_format['name']: {self.reboot_arm_format['service_name']: {self.reboot_arm_format['service']: self.reboot_arm_format['characteristics_properties']},
+        if mgr.enable_reboot:
+            reboot_homebridge_config = {self.reboot_format['name']: {self.reboot_arm_format['service_name']: {self.reboot_arm_format['service']: self.reboot_arm_format['characteristics_properties']},
                                                                         self.reboot_trigger_format['service_name']: {self.reboot_trigger_format['service']: self.reboot_trigger_format['characteristics_properties']},
                                                                         self.restart_trigger_format['service_name']: {self.restart_trigger_format['service']: self.restart_trigger_format['characteristics_properties']}}}
+        else:
+            reboot_homebridge_config = {}
         # Light Dimmers
-        light_dimmers_homebridge_config = {light: {light: {self.dimmer_format['service']: self.dimmer_format['characteristics_properties']}} for light in self.light_dimmer_names_device_id}
-        for light in self.colour_light_dimmer_names:
-            light_dimmers_homebridge_config[light][light][self.dimmer_format['service']] = self.colour_light_dimmer_characteristics_properties # Add hue and saturation characteristics to colour dimmer
+        if mgr.light_dimmers_present:
+            light_dimmers_homebridge_config = {light: {light: {self.dimmer_format['service']: self.dimmer_format['characteristics_properties']}} for light in self.light_dimmer_names_device_id}
+            for light in self.colour_light_dimmer_names:
+                light_dimmers_homebridge_config[light][light][self.dimmer_format['service']] = self.colour_light_dimmer_characteristics_properties # Add hue and saturation characteristics to colour dimmer
+        else:
+            light_dimmers_homebridge_config = {}
         # Aircon
-        aircon_homebridge_config = {}
-        for aircon_name in self.aircon_config:
-            aircon_homebridge_config[self.aircon_ventilation_button_format[aircon_name]['name']] = {self.aircon_ventilation_button_format[aircon_name]['service_name']:
-                                                                                                    {self.aircon_ventilation_button_format[aircon_name]['service']:
-                                                                                                     self.aircon_ventilation_button_format[aircon_name]['characteristics_properties']}}
-            aircon_homebridge_config[self.aircon_filter_indicator_format[aircon_name]['name']] = {self.aircon_filter_indicator_format[aircon_name]['service_name']: {self.aircon_filter_indicator_format[aircon_name]['service']:
-                                                                                                                                                                    self.aircon_filter_indicator_format[aircon_name]['characteristics_properties']}}
-            aircon_homebridge_config[self.aircon_reset_effectiveness_log_button_format[aircon_name]['name']] = {self.aircon_reset_effectiveness_log_button_format[aircon_name]['service_name']:
-                                                                                                                {self.aircon_reset_effectiveness_log_button_format[aircon_name]['service']:
-                                                                                                                  self.aircon_reset_effectiveness_log_button_format[aircon_name]['characteristics_properties']}}
-            aircon_homebridge_config[self.aircon_status_format[aircon_name]['name']] = {self.aircon_remote_operation_format[aircon_name]['service_name']:
-                                                                                        {self.aircon_remote_operation_format[aircon_name]['service']:
-                                                                                         self.aircon_remote_operation_format[aircon_name]['characteristics_properties']},
-                                                                                        self.aircon_damper_format[aircon_name]['service_name']:
-                                                                                        {self.aircon_damper_format[aircon_name]['service']:
-                                                                                         self.aircon_damper_format[aircon_name]['characteristics_properties']},
-                                                                                        self.aircon_heat_format[aircon_name]['service_name']:
-                                                                                        {self.aircon_heat_format[aircon_name]['service']:
-                                                                                         self.aircon_heat_format[aircon_name]['characteristics_properties']},
-                                                                                        self.aircon_cool_format[aircon_name]['service_name']:
-                                                                                        {self.aircon_cool_format[aircon_name]['service']:
-                                                                                         self.aircon_cool_format[aircon_name]['characteristics_properties']},
-                                                                                        self.aircon_fan_format[aircon_name]['service_name']:
-                                                                                        {self.aircon_fan_format[aircon_name]['service']:
-                                                                                         self.aircon_fan_format[aircon_name]['characteristics_properties']},
-                                                                                        self.aircon_fan_hi_format[aircon_name]['service_name']:
-                                                                                        {self.aircon_fan_hi_format[aircon_name]['service']:
-                                                                                         self.aircon_fan_hi_format[aircon_name]['characteristics_properties']},
-                                                                                        self.aircon_fan_lo_format[aircon_name]['service_name']:
-                                                                                        {self.aircon_fan_lo_format[aircon_name]['service']:
-                                                                                         self.aircon_fan_lo_format[aircon_name]['characteristics_properties']},
-                                                                                        self.aircon_compressor_format[aircon_name]['service_name']:
-                                                                                        {self.aircon_compressor_format[aircon_name]['service']:
-                                                                                         self.aircon_compressor_format[aircon_name]['characteristics_properties']},
-                                                                                        self.aircon_heating_format[aircon_name]['service_name']:
-                                                                                        {self.aircon_heating_format[aircon_name]['service']:
-                                                                                         self.aircon_heating_format[aircon_name]['characteristics_properties']},
-                                                                                        self.aircon_malfunction_format[aircon_name]['service_name']:
-                                                                                        {self.aircon_malfunction_format[aircon_name]['service']:
-                                                                                         self.aircon_malfunction_format[aircon_name]['characteristics_properties']}}
-            aircon_thermostat_names = self.aircon_config[aircon_name]['Day Zone'] + self.aircon_config[aircon_name]['Night Zone'] + [self.aircon_config[aircon_name]['Master']]
-            for thermostat in aircon_thermostat_names:
-                aircon_homebridge_config[aircon_name + ' ' + thermostat] = {aircon_name + ' ' + thermostat: {self.aircon_thermostat_format[aircon_name]['service']:
-                                                                                                             self.aircon_thermostat_format[aircon_name]['characteristics_properties']}}
+        if mgr.aircons_present:
+            aircon_homebridge_config = {}
+            for aircon_name in self.aircon_config:
+                aircon_homebridge_config[self.aircon_ventilation_button_format[aircon_name]['name']] = {self.aircon_ventilation_button_format[aircon_name]['service_name']:
+                                                                                                        {self.aircon_ventilation_button_format[aircon_name]['service']:
+                                                                                                         self.aircon_ventilation_button_format[aircon_name]['characteristics_properties']}}
+                aircon_homebridge_config[self.aircon_filter_indicator_format[aircon_name]['name']] = {self.aircon_filter_indicator_format[aircon_name]['service_name']: {self.aircon_filter_indicator_format[aircon_name]['service']:
+                                                                                                                                                                        self.aircon_filter_indicator_format[aircon_name]['characteristics_properties']}}
+                aircon_homebridge_config[self.aircon_reset_effectiveness_log_button_format[aircon_name]['name']] = {self.aircon_reset_effectiveness_log_button_format[aircon_name]['service_name']:
+                                                                                                                    {self.aircon_reset_effectiveness_log_button_format[aircon_name]['service']:
+                                                                                                                      self.aircon_reset_effectiveness_log_button_format[aircon_name]['characteristics_properties']}}
+                aircon_homebridge_config[self.aircon_status_format[aircon_name]['name']] = {self.aircon_remote_operation_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_remote_operation_format[aircon_name]['service']:
+                                                                                             self.aircon_remote_operation_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_damper_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_damper_format[aircon_name]['service']:
+                                                                                             self.aircon_damper_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_heat_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_heat_format[aircon_name]['service']:
+                                                                                             self.aircon_heat_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_cool_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_cool_format[aircon_name]['service']:
+                                                                                             self.aircon_cool_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_fan_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_fan_format[aircon_name]['service']:
+                                                                                             self.aircon_fan_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_fan_hi_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_fan_hi_format[aircon_name]['service']:
+                                                                                             self.aircon_fan_hi_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_fan_lo_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_fan_lo_format[aircon_name]['service']:
+                                                                                             self.aircon_fan_lo_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_compressor_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_compressor_format[aircon_name]['service']:
+                                                                                             self.aircon_compressor_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_heating_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_heating_format[aircon_name]['service']:
+                                                                                             self.aircon_heating_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_malfunction_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_malfunction_format[aircon_name]['service']:
+                                                                                             self.aircon_malfunction_format[aircon_name]['characteristics_properties']}}
+                aircon_thermostat_names = self.aircon_config[aircon_name]['Day Zone'] + self.aircon_config[aircon_name]['Night Zone'] + [self.aircon_config[aircon_name]['Master']]
+                for thermostat in aircon_thermostat_names:
+                    aircon_homebridge_config[aircon_name + ' ' + thermostat] = {aircon_name + ' ' + thermostat: {self.aircon_thermostat_format[aircon_name]['service']:
+                                                                                                                 self.aircon_thermostat_format[aircon_name]['characteristics_properties']}}
+        else:
+            aircon_homebridge_config = {}
         # Doorbell
-        if mgr.garage_door_present == True:
+        if mgr.doorbell_present:
             doorbell_homebridge_config = {'Doorbell Status': {}} # Make a Doorbell Status Key
             for button in self.doorbell_homebridge_json_name_map:
                 if self.doorbell_homebridge_json_name_map[button] != 'Doorbell Status':
@@ -653,59 +715,92 @@ class HomebridgeClass(object):
         else:
             doorbell_homebridge_config = {}                       
         # Air Purifiers
-        air_purifiers_homebridge_config = {}
-        for air_purifier in self.air_purifier_names:
-            air_purifiers_homebridge_config[air_purifier + self.air_purifier_format['name']] = {air_purifier + self.air_purifier_format['service_name']: {self.air_purifier_format['service']: self.air_purifier_format['characteristics_properties']},
-                                                                                            air_purifier + self.air_purifier_LED_format['service_name']: {self.air_purifier_LED_format['service']:
-                                                                                                                                                              self.air_purifier_LED_format['characteristics_properties']},
-                                                                                                air_purifier + self.air_purifier_filter_format['service_name']: {self.air_purifier_filter_format['service']:
-                                                                                                                                                                 self.air_purifier_filter_format['characteristics_properties']}}
-        for air_purifier in self.auto_air_purifier_names:
-            air_purifiers_homebridge_config[air_purifier + self.air_quality_format['name']] = {air_purifier + self.air_quality_format['service_name']: {self.air_quality_format['service']:
-                                                                                                                                                                 self.air_quality_format['characteristics_properties']}}
-            air_purifiers_homebridge_config[air_purifier + self.CO2_level_format['name']] = {air_purifier + self.CO2_level_format['service_name']: {self.CO2_level_format['service']:
-                                                                                                                                                                 self.CO2_level_format['characteristics_properties']}}
-            air_purifiers_homebridge_config[air_purifier + self.PM2_5_alert_format['name']] = {air_purifier + self.PM2_5_alert_format['service_name']: {self.PM2_5_alert_format['service']:
-                                                                                                                                                                 self.PM2_5_alert_format['characteristics_properties']}} 
+        if mgr.air_purifiers_present:
+            air_purifiers_homebridge_config = {}
+            for air_purifier in self.air_purifier_names:
+                air_purifiers_homebridge_config[air_purifier + self.air_purifier_format['name']] = {air_purifier + self.air_purifier_format['service_name']: {self.air_purifier_format['service']: self.air_purifier_format['characteristics_properties']},
+                                                                                                air_purifier + self.air_purifier_LED_format['service_name']: {self.air_purifier_LED_format['service']:
+                                                                                                                                                                  self.air_purifier_LED_format['characteristics_properties']},
+                                                                                                    air_purifier + self.air_purifier_filter_format['service_name']: {self.air_purifier_filter_format['service']:
+                                                                                                                                                                     self.air_purifier_filter_format['characteristics_properties']}}
+            for air_purifier in self.auto_air_purifier_names:
+                air_purifiers_homebridge_config[air_purifier + self.air_quality_format['name']] = {air_purifier + self.air_quality_format['service_name']: {self.air_quality_format['service']:
+                                                                                                                                                                     self.air_quality_format['characteristics_properties']}}
+                air_purifiers_homebridge_config[air_purifier + self.CO2_level_format['name']] = {air_purifier + self.CO2_level_format['service_name']: {self.CO2_level_format['service']:
+                                                                                                                                                                     self.CO2_level_format['characteristics_properties']}}
+                air_purifiers_homebridge_config[air_purifier + self.PM2_5_alert_format['name']] = {air_purifier + self.PM2_5_alert_format['service_name']: {self.PM2_5_alert_format['service']:
+                                                                                                                                                                     self.PM2_5_alert_format['characteristics_properties']}} 
+        else:
+            air_purifiers_homebridge_config = {}
         # Multisensors
-        multisensors_homebridge_config = {self.outdoor_sensors_name: {}} # Make a key for the outdoor sensors' accessory name
-        for multisensor in self.multisensor_names:
-            if multisensor in self.outdoor_multisensor_names: # Outdoor sensors are grouped as services under one accessory
-                multisensors_homebridge_config[self.outdoor_sensors_name][multisensor + self.temperature_format['service_name']] = {self.temperature_format['service']: self.temperature_format['characteristics_properties']}
-                multisensors_homebridge_config[self.outdoor_sensors_name][multisensor + self.humidity_format['service_name']] = {self.humidity_format['service']: self.humidity_format['characteristics_properties']}
-                multisensors_homebridge_config[self.outdoor_sensors_name][multisensor + self.light_level_format['service_name']] = {self.light_level_format['service']: self.light_level_format['characteristics_properties']}
-                multisensors_homebridge_config[self.outdoor_sensors_name][multisensor + self.motion_format['service_name']] = {self.motion_format['service']: self.motion_format['characteristics_properties']}
-            else: # Indoor Sensors are separate accessories
-                multisensors_homebridge_config[multisensor + self.temperature_format['name']] = {multisensor + self.temperature_format['service_name']: {self.temperature_format['service']:
-                                                                                                                                                                 self.temperature_format['characteristics_properties']}}
-                multisensors_homebridge_config[multisensor + self.humidity_format['name']] = {multisensor + self.humidity_format['service_name']: {self.humidity_format['service']:
-                                                                                                                                                   self.humidity_format['characteristics_properties']}}
-                multisensors_homebridge_config[multisensor + self.light_level_format['name']] = {multisensor + self.light_level_format['service_name']: {self.light_level_format['service']:
-                                                                                                                                                         self.light_level_format['characteristics_properties']}}
-                multisensors_homebridge_config[multisensor + self.motion_format['name']] = {multisensor + self.motion_format['service_name']: {self.motion_format['service']:
-                                                                                                                                               self.motion_format['characteristics_properties']}}
-        # Powerpoints
-        powerpoints_homebridge_config = {powerpoint + self.powerpoint_format['name']: {powerpoint + self.powerpoint_format['service_name']: {self.powerpoint_format['service']: self.powerpoint_format['characteristics_properties']}}
+        if mgr.multisensors_present:
+            multisensors_homebridge_config = {self.outdoor_sensors_name: {}} # Make a key for the outdoor sensors' accessory name
+            for multisensor in self.multisensor_names:
+                if multisensor in self.outdoor_multisensor_names: # Outdoor sensors are grouped as services under one accessory
+                    multisensors_homebridge_config[self.outdoor_sensors_name][multisensor + self.temperature_format['service_name']] = {self.temperature_format['service']: self.temperature_format['characteristics_properties']}
+                    multisensors_homebridge_config[self.outdoor_sensors_name][multisensor + self.humidity_format['service_name']] = {self.humidity_format['service']: self.humidity_format['characteristics_properties']}
+                    multisensors_homebridge_config[self.outdoor_sensors_name][multisensor + self.light_level_format['service_name']] = {self.light_level_format['service']: self.light_level_format['characteristics_properties']}
+                    multisensors_homebridge_config[self.outdoor_sensors_name][multisensor + self.motion_format['service_name']] = {self.motion_format['service']: self.motion_format['characteristics_properties']}
+                else: # Indoor Sensors are separate accessories
+                    multisensors_homebridge_config[multisensor + self.temperature_format['name']] = {multisensor + self.temperature_format['service_name']: {self.temperature_format['service']:
+                                                                                                                                                                     self.temperature_format['characteristics_properties']}}
+                    multisensors_homebridge_config[multisensor + self.humidity_format['name']] = {multisensor + self.humidity_format['service_name']: {self.humidity_format['service']:
+                                                                                                                                                       self.humidity_format['characteristics_properties']}}
+                    multisensors_homebridge_config[multisensor + self.light_level_format['name']] = {multisensor + self.light_level_format['service_name']: {self.light_level_format['service']:
+                                                                                                                                                             self.light_level_format['characteristics_properties']}}
+                    multisensors_homebridge_config[multisensor + self.motion_format['name']] = {multisensor + self.motion_format['service_name']: {self.motion_format['service']:
+                                                                                                                                                   self.motion_format['characteristics_properties']}}
+        else:
+            multisensors_homebridge_config = {}
+            # Powerpoints
+        if mgr.powerpoints_present:
+            powerpoints_homebridge_config = {powerpoint + self.powerpoint_format['name']: {powerpoint + self.powerpoint_format['service_name']: {self.powerpoint_format['service']: self.powerpoint_format['characteristics_properties']}}
                                          for powerpoint in self.powerpoint_names_device_id}
+        else:
+            powerpoints_homebridge_config = {}
         # Flood Sensors
-        flood_sensors_homebridge_config = {flood_sensor + self.flood_state_format['name']: {flood_sensor + self.flood_state_format['service_name']: {self.flood_state_format['service']:
+        if mgr.flood_sensors_present:
+            flood_sensors_homebridge_config = {flood_sensor + self.flood_state_format['name']: {flood_sensor + self.flood_state_format['service_name']: {self.flood_state_format['service']:
                                                                                                                                                      self.flood_state_format['characteristics_properties']}}
                                            for flood_sensor in self.flood_sensor_names}
-        # Outdoor Air Quality Monitor
-        if mgr.outdoor_air_quality_sensor_present == True:
-            outdoor_air_quality_monitor_config = {**{self.outdoor_aqi_format['name']: {self.outdoor_aqi_format['service_name']: {self.outdoor_aqi_format['service']: self.outdoor_aqi_format['characteristics_properties']}}},
-                                                  **{self.outdoor_reducing_format['name']: {self.outdoor_reducing_format['service_name']: {self.outdoor_reducing_format['service']:
-                                                                                                                                           self.outdoor_reducing_format['characteristics_properties']}}},
-                                                  **{self.outdoor_ammonia_format['name']: {self.outdoor_ammonia_format['service_name']: {self.outdoor_ammonia_format['service']:
-                                                                                                                                         self.outdoor_ammonia_format['characteristics_properties']}}},
-                                                  **{self.outdoor_PM2_5_alert_format['name']: {self.outdoor_PM2_5_alert_format['service_name']: {self.outdoor_PM2_5_alert_format['service']:
-                                                                                                                                         self.outdoor_PM2_5_alert_format['characteristics_properties']}}}}
         else:
-            outdoor_air_quality_monitor_config = {}
+            flood_sensors_homebridge_config = {}
+        # Enviro Monitors
+        if mgr.enviro_monitors_present == True:
+            enviro_monitors_homebridge_config = {}
+            for enviro_monitor in self.enviro_config:
+                enviro_monitors_homebridge_config[enviro_monitor +
+                                                  self.enviro_aqi_format['name']] = {enviro_monitor + self.enviro_aqi_format['service_name']:
+                                                                                      {self.enviro_aqi_format['service']:
+                                                                                       self.enviro_aqi_format['characteristics_properties']}}
+                enviro_monitors_homebridge_config[enviro_monitor +
+                                                  self.enviro_reducing_format['name']] = {enviro_monitor + self.enviro_reducing_format['service_name']:
+                                                                                     {self.enviro_reducing_format['service']:
+                                                                                      self.enviro_reducing_format['characteristics_properties']}}
+                enviro_monitors_homebridge_config[enviro_monitor +
+                                                  self.enviro_ammonia_format['name']] = {enviro_monitor + self.enviro_ammonia_format['service_name']:
+                                                                                      {self.enviro_ammonia_format['service']:
+                                                                                        self.enviro_ammonia_format['characteristics_properties']}}
+                enviro_monitors_homebridge_config[enviro_monitor + self.enviro_PM2_5_alert_format['name']] = {enviro_monitor +
+                                                                                                               self.enviro_PM2_5_alert_format['service_name']:
+                                                                                                               {self.enviro_PM2_5_alert_format['service']:
+                                                                                                                self.enviro_PM2_5_alert_format['characteristics_properties']}}
+                if self.enviro_config[enviro_monitor]['Capture Temp/Hum/Bar/Lux']: # Set up Temp/Hum/Bar/Lux if enabled
+                    enviro_monitors_homebridge_config[enviro_monitor + self.enviro_temp_format['name']] = {enviro_monitor + self.enviro_temp_format['service_name']:
+                                                                                                           {self.enviro_temp_format['service']:
+                                                                                                            self.enviro_temp_format['characteristics_properties']}}
+                    enviro_monitors_homebridge_config[enviro_monitor + self.enviro_hum_format['name']] = {enviro_monitor + self.enviro_hum_format['service_name']:
+                                                                                                          {self.enviro_hum_format['service']:
+                                                                                                           self.enviro_hum_format['characteristics_properties']}}
+                    enviro_monitors_homebridge_config[enviro_monitor + self.enviro_lux_format['name']] = {enviro_monitor + self.enviro_lux_format['service_name']:
+                                                                                                          {self.enviro_lux_format['service']:
+                                                                                                           self.enviro_lux_format['characteristics_properties']}}       
+        else:
+            enviro_monitors_homebridge_config = {}
         # Build entire required_homebridge_config
-        required_homebridge_config = {**blinds_homebridge_config, **door_sensor_homebridge_config, **garage_door_homebridge_config, **reboot_homebridge_config, **light_dimmers_homebridge_config,
+        required_homebridge_config = {**blinds_homebridge_config, **door_sensors_homebridge_config, **garage_door_homebridge_config, **reboot_homebridge_config, **light_dimmers_homebridge_config,
                                       **aircon_homebridge_config, **doorbell_homebridge_config, **air_purifiers_homebridge_config, **multisensors_homebridge_config, **powerpoints_homebridge_config,
-                                      **flood_sensors_homebridge_config, **outdoor_air_quality_monitor_config}
+                                      **flood_sensors_homebridge_config, **enviro_monitors_homebridge_config}
         return required_homebridge_config
                     
     def find_incorrect_accessories(self, required_homebridge_config, current_homebridge_config):
@@ -1638,10 +1733,10 @@ class HomebridgeClass(object):
         #print('Update Aircon Thermostat Target Temp', homebridge_json)
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
 
-    def update_air_quality(self, name, part_2_5, co2, voc, aqi, max_co2, co2_threshold, part_2_5_threshold):
+    def update_blueair_aqi(self, name, part_2_5, co2, voc, aqi, max_co2, co2_threshold, part_2_5_threshold):
         homebridge_json = {}
-        homebridge_json['name'] = self.air_quality_service_name_map[name]
-        homebridge_json['service_name'] = self.air_quality_service_name_map[name]
+        homebridge_json['name'] = name + self.air_quality_format['name']
+        homebridge_json['service_name'] = name + self.air_quality_format['service_name']
         homebridge_json['characteristic'] = 'AirQuality'
         homebridge_json['value'] = aqi
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
@@ -1651,8 +1746,8 @@ class HomebridgeClass(object):
         homebridge_json['characteristic'] = 'VOCDensity'
         homebridge_json['value'] = voc
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['name'] = self.CO2_service_name_map[name]
-        homebridge_json['service_name'] = self.CO2_service_name_map[name]
+        homebridge_json['name'] = name + self.CO2_level_format['name']
+        homebridge_json['service_name'] = name + self.CO2_level_format['service_name']
         homebridge_json['characteristic'] = 'CarbonDioxideLevel'
         homebridge_json['value'] = co2
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
@@ -1665,8 +1760,8 @@ class HomebridgeClass(object):
         homebridge_json['characteristic'] = 'CarbonDioxidePeakLevel'
         homebridge_json['value'] = max_co2
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['name'] = self.PM2_5_service_name_map[name]
-        homebridge_json['service_name'] = self.PM2_5_service_name_map[name]
+        homebridge_json['name'] = name + self.PM2_5_alert_format['name']
+        homebridge_json['service_name'] = name + self.PM2_5_alert_format['service_name']
         homebridge_json['characteristic'] = 'MotionDetected'
         if part_2_5 >= part_2_5_threshold:
             homebridge_json['value'] = True
@@ -1742,10 +1837,10 @@ class HomebridgeClass(object):
             homebridge_json['value'] = 1
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
 
-    def update_outdoor_aqi(self, aqi, parsed_json, individual_aqi, PM2_5_alert_level):
+    def update_enviro_aqi(self, name, enviro_config, aqi, parsed_json, individual_aqi, PM2_5_alert_level, gas_readings):
         homebridge_json = {}
-        homebridge_json['name'] = self.outdoor_aqi_format['name']
-        homebridge_json['service_name'] = self.outdoor_aqi_format['service_name']
+        homebridge_json['name'] = name + self.enviro_aqi_format['name']
+        homebridge_json['service_name'] = name + self.enviro_aqi_format['service_name']
         homebridge_json['characteristic'] = 'AirQuality'
         homebridge_json['value'] = aqi
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
@@ -1755,34 +1850,53 @@ class HomebridgeClass(object):
         homebridge_json['characteristic'] = 'PM10Density'
         homebridge_json['value'] = round(parsed_json['P10'], 0)
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['characteristic'] = 'NitrogenDioxideDensity'
-        homebridge_json['value'] = round(parsed_json['Oxi'], 0)
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['name'] = self.outdoor_reducing_format['name']
-        homebridge_json['service_name'] = self.outdoor_reducing_format['service_name']
-        homebridge_json['characteristic'] = 'AirQuality'
-        homebridge_json['value'] = individual_aqi['Red']
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['characteristic'] = 'NitrogenDioxideDensity'
-        homebridge_json['value'] = round(parsed_json['Red'], 0)
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['name'] = self.outdoor_ammonia_format['name']
-        homebridge_json['service_name'] = self.outdoor_ammonia_format['service_name']
-        homebridge_json['characteristic'] = 'AirQuality'
-        homebridge_json['value'] = individual_aqi['NH3']
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['characteristic'] = 'NitrogenDioxideDensity'
-        homebridge_json['value'] = round(parsed_json['NH3'], 0)
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['name'] = self.outdoor_PM2_5_alert_format['name']
-        homebridge_json['service_name'] = self.outdoor_PM2_5_alert_format['service_name']
+        if gas_readings:
+            homebridge_json['characteristic'] = 'NitrogenDioxideDensity'
+            homebridge_json['value'] = parsed_json['Oxi']
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['name'] = name + self.enviro_reducing_format['name']
+            homebridge_json['service_name'] = name + self.enviro_reducing_format['service_name']
+            homebridge_json['characteristic'] = 'AirQuality'
+            homebridge_json['value'] = individual_aqi['Red']
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['characteristic'] = 'NitrogenDioxideDensity'
+            homebridge_json['value'] = parsed_json['Red']
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['name'] = name + self.enviro_ammonia_format['name']
+            homebridge_json['service_name'] = name + self.enviro_ammonia_format['service_name']
+            homebridge_json['characteristic'] = 'AirQuality'
+            homebridge_json['value'] = individual_aqi['NH3']
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['characteristic'] = 'NitrogenDioxideDensity'
+            homebridge_json['value'] = parsed_json['NH3']
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['name'] = name + self.enviro_PM2_5_alert_format['name']
+        homebridge_json['service_name'] = name + self.enviro_PM2_5_alert_format['service_name']
         homebridge_json['characteristic'] = 'MotionDetected'
         if parsed_json['P2.5'] >= PM2_5_alert_level:
             homebridge_json['value'] = True
         else:
             homebridge_json['value'] = False
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        
+        if enviro_config['Capture Temp/Hum/Bar/Lux']: # If there are Temp/Hum/Bar/Lux Readings
+            homebridge_json['name'] = name + self.enviro_temp_format['name']
+            homebridge_json['service_name'] = name + self.enviro_temp_format['service_name']
+            homebridge_json['characteristic'] = 'CurrentTemperature'
+            homebridge_json['value'] = parsed_json['Temp']
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['name'] = name + self.enviro_hum_format['name']
+            homebridge_json['service_name'] = name + self.enviro_hum_format['service_name']
+            homebridge_json['characteristic'] = 'CurrentRelativeHumidity'
+            homebridge_json['value'] = parsed_json['Hum'][0]
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['name'] = name + self.enviro_lux_format['name']
+            homebridge_json['service_name'] = name + self.enviro_lux_format['service_name']
+            homebridge_json['characteristic'] = 'CurrentAmbientLightLevel'
+            light_level = parsed_json['Lux']
+            if light_level < 0.0001:
+                light_level = 0.0001 #HomeKit minValue is set to 0.0001 Lux
+            homebridge_json['value'] = light_level
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))        
                                                         
 class DomoticzClass(object): # Manages communications to and from the z-wave objects
     def __init__(self):
@@ -1815,8 +1929,7 @@ class DomoticzClass(object): # Manages communications to and from the z-wave obj
         self.powerpoint_format = {'command': 'switchlight'}
         # Map powerpoint switch functions to translate True to On and False to Off for domoticz_json
         self.powerpoint_map = {True: 'On', False:'Off'}
-        self.air_quality_idx_map = {'Living':{'part_2_5': 708, 'co2': 705, 'voc': 706, 'max_aqi': 707}}
-        self.outdoor_air_quality_idx_map = {'P1': 784, 'P2.5': 778, 'P10': 779, 'AQI': 780, 'NH3': 781, 'Oxi': 782, 'Red': 783}
+        self.blueair_aqi_map = {'Living':{'part_2_5': 708, 'co2': 705, 'voc': 706, 'max_aqi': 707}}
 
     def process_device_data(self, parsed_json):
         # Selects the object and method for incoming multisensor, door sensor, flood sensor and light dimmer messages
@@ -1986,23 +2099,23 @@ class DomoticzClass(object): # Manages communications to and from the z-wave obj
         if publish:
             client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
 
-    def update_air_quality(self, name, part_2_5, co2, voc, max_aqi):
+    def update_blueair_aqi(self, name, part_2_5, co2, voc, max_aqi):
         domoticz_json = {}
-        if name in self.air_quality_idx_map:
+        if name in self.blueair_aqi_map:
             #print('Updating Domoticz Air Quality')
-            domoticz_json['idx'] = self.air_quality_idx_map[name]['part_2_5']
+            domoticz_json['idx'] = self.blueair_aqi_map[name]['part_2_5']
             domoticz_json['nvalue'] = 0
             domoticz_json['svalue'] = str(round(part_2_5, 0))
             client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
-            domoticz_json['idx'] = self.air_quality_idx_map[name]['max_aqi']
+            domoticz_json['idx'] = self.blueair_aqi_map[name]['max_aqi']
             domoticz_json['svalue'] = str(max_aqi)
             client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
             domoticz_json = {}
-            domoticz_json['idx'] = self.air_quality_idx_map[name]['voc']
+            domoticz_json['idx'] = self.blueair_aqi_map[name]['voc']
             domoticz_json['nvalue'] = voc
             client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
             domoticz_json = {}
-            domoticz_json['idx'] = self.air_quality_idx_map[name]['co2']
+            domoticz_json['idx'] = self.blueair_aqi_map[name]['co2']
             domoticz_json['nvalue'] = co2
             client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
 
@@ -2022,18 +2135,28 @@ class DomoticzClass(object): # Manages communications to and from the z-wave obj
         domoticz_json['svalue'] = temp
         client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
 
-    def update_outdoor_aqi(self, aqi, parsed_json):
+    def update_enviro_aqi(self, name, enviro_config, aqi, parsed_json):
         #print('Incoming Domoticz Outdoor AQI', parsed_json)
         domoticz_json = {}
         domoticz_json['nvalue'] = 0
-        for measurement in self.outdoor_air_quality_idx_map:
-            if measurement != 'AQI' and measurement in parsed_json:
-                domoticz_json['idx'] = self.outdoor_air_quality_idx_map[measurement]
+        non_aqi_message = {}
+        for measurement in enviro_config['Device IDs']:
+            if (measurement == 'Temp' or measurement == 'Hum' or measurement == 'Bar') and measurement in parsed_json:
+                non_aqi_message[measurement] = parsed_json[measurement]       
+            elif measurement != 'AQI' and measurement in parsed_json:
+                domoticz_json['idx'] = enviro_config['Device IDs'][measurement]
                 domoticz_json['svalue'] = str(parsed_json[measurement])
+                #print('Domoticz', domoticz_json)
                 client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
-        domoticz_json['idx'] = self.outdoor_air_quality_idx_map['AQI']
+        domoticz_json['idx'] = enviro_config['Device IDs']['AQI']
         domoticz_json['svalue'] = str(aqi)
+        #print('Domoticz', domoticz_json)
         client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
+        if non_aqi_message: # If there are some climate messages
+            domoticz_json['idx'] = enviro_config['Device IDs']['Temp']
+            domoticz_json['svalue'] = str(non_aqi_message['Temp']) + ';'+ str(non_aqi_message['Hum'][0]) + ';' + non_aqi_message['Hum'][1] + ';' + str(non_aqi_message['Bar'][0]) + ';' + non_aqi_message['Bar'][1]
+            #print('Domoticz', domoticz_json)
+            client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
 
 class FloodSensorClass(object): 
     def __init__(self, name):        
@@ -3998,57 +4121,89 @@ class SeneyeClass:
             print('Seneye Latest Readings Value Error', seneye_comms_error)
             return valid_reading,'Seneye Comms Error', 0, 0, 0, 0
 
-class AqiClass(object):
-    def __init__(self):
-        #self.air_reading_bands = {'PM2_5':[0, 6, 12, 35, 150], 'PM10': [0, 27, 54, 154, 254], 'ammonia': [0, 200, 350, 450, 750], 'reducing': [0, 3, 6, 12, 50], 'oxidizing': [0, 0.03, 0.06, 0.12, 0.5]}
-        #self.air_reading_bands = {'PM2_5':[0, 6, 12, 35, 150], 'PM10': [0, 27, 54, 154, 254], 'ammonia': [0, 200, 350, 450, 750], 'reducing': [0, 200, 350, 450, 750], 'oxidizing': [0, 6, 12, 35, 150]}
-        self.valid_aqi_readings = ['P1', 'P2.5', 'P10', 'Red', 'Oxi', 'NH3']
+class EnviroClass(object):
+    def __init__(self, name, enviro_config):
+        #print ('Created Enviro Instance', name, enviro_config)
+        self.name = name
+        self.valid_enviro_aqi_readings = ['P1', 'P2.5', 'P10', 'Red', 'Oxi', 'NH3']
+        self.valid_enviro_aqi_readings_no_gas = ['P1', 'P2.5', 'P10']
+        self.valid_enviro_non_aqi_readings = ['Temp', 'Hum', 'Bar', 'Lux']
+        self.valid_luftdaten_readings = ['P2.5', 'P10']
         self.air_reading_bands = {'P1':[0, 6, 17, 27, 35], 'P2.5':[0, 11, 35, 53, 70], 'P10': [0, 16, 50, 75, 100], 'NH3': [0, 5, 30, 50, 75], 'Red': [0, 25, 30, 50, 75], 'Oxi': [0, 0.5, 1, 3, 5]}
         self.PM2_5_alert_level = 35
         self.max_aqi = 1
+        self.enviro_config = enviro_config
 
-    def capture_readings(self, parsed_json):
-        individual_aqi = {}
-        homebridge_data = {}
-        self.max_aqi = 0
-        for reading in parsed_json: # Check each reading
-            if reading in self.valid_aqi_readings: # Ignore non-air quality readings
-                individual_aqi[reading] = 0
-                for boundary in range(4): # Check each reading against its AQI boundary
-                    if parsed_json[reading] >= self.air_reading_bands[reading][boundary]: # Find the boundary that the reading has met or exceeded 
-                        aqi = boundary + 1 # Convert the boundary to the AQI reading
-                        individual_aqi[reading] = aqi
-                        #print('Search Max AQI', aqi, reading, self.air_readings[reading])
-                        if aqi > self.max_aqi: # If this reading has the maximum AQI so far, make it the max AQI
-                            self.max_aqi = aqi
-                            max_reading = reading
-                        #print('Air Quality Component:', reading, 'has an AQI Level of', aqi, 'with a reading of', round(self.air_readings[reading],0))
+    def capture_readings(self, source, parsed_json):
+        #print('Capturing Enviro Readings', source, parsed_json)
+        if source == 'Luftdaten':
+            valid_source = True
+            gas_readings = False
+            valid_aqi_readings = self.valid_luftdaten_readings
+        elif source == 'Enviro':
+            valid_source = True
+            if 'Gas Calibrated' in parsed_json: # Only capture gas readings if the sensors have been calibrated
+                if parsed_json['Gas Calibrated']:
+                    gas_readings = True
+                    valid_aqi_readings = self.valid_enviro_aqi_readings
+                else:
+                    gas_readings = False
+                    valid_aqi_readings = self.valid_enviro_aqi_readings_no_gas
+            else:
+                gas_readings = True # This is for backwards compatibility. Enviro Monitors prior to 3.55 didn't have a 'Gas Calibrated' key
+                valid_aqi_readings = self.valid_enviro_aqi_readings
+        else:
+            valid_source = False
+        if valid_source:
+            individual_aqi = {}
+            homebridge_data = {}
+            domoticz_data = {}
+            self.max_aqi = 0
+            valid_source = False
+            for reading in parsed_json: # Check each reading
+                if reading in valid_aqi_readings: # Analyse AQI Readings
+                    individual_aqi[reading] = 0
+                    for boundary in range(4): # Check each reading against its AQI boundary
+                        if parsed_json[reading] >= self.air_reading_bands[reading][boundary]: # Find the boundary that the reading has met or exceeded 
+                            aqi = boundary + 1 # Convert the boundary to the AQI reading
+                            individual_aqi[reading] = aqi
+                            #print('Search Max AQI', aqi, reading, self.air_reading_bands[reading])
+                            if aqi > self.max_aqi: # If this reading has the maximum AQI so far, make it the max AQI
+                                self.max_aqi = aqi
+                                max_reading = reading
+                            #print('Air Quality Component:', reading, 'has an AQI Level of', aqi, 'with a reading of', round(parsed_json[reading],0))
                     if self.max_aqi > 0:
-                        #print('AQI is at Level', self.max_aqi, 'due to', max_reading, 'with a reading of', round(self.air_readings[max_reading],0))
+                        #print('AQI is at Level', self.max_aqi, 'due to', max_reading, 'with a reading of', round(parsed_json[max_reading],0))
                         pass
                     else:
                         #print('AQI is at Level 0')
                         pass
-                # Convert ppm to ug/m3 for homebridge gases data (except for Red, which is in mg/m3)
-                if reading == 'Oxi':
-                    homebridge_data[reading] = 1000* parsed_json[reading] * 46/24.45
-                elif reading == 'Red':
-                    homebridge_data[reading] = parsed_json[reading] * 28/24.45
-                elif reading == 'NH3':
-                    homebridge_data[reading] = 1000 * parsed_json[reading] * 17/24.45
+                    domoticz_data[reading] = parsed_json[reading]
+                    # Convert ppm to ug/m3 for Outdoor homebridge gases data (except for Red and NH3, which is in mg/m3)
+                    if reading == 'Oxi':
+                        homebridge_data[reading] = round(1000* parsed_json[reading] * 46/24.45, 0)
+                    elif reading == 'Red':
+                        homebridge_data[reading] = round(parsed_json[reading] * 28/24.45, 2)
+                    elif reading == 'NH3':
+                        homebridge_data[reading] = round(parsed_json[reading] * 17/24.45, 2)
+                    else:
+                        homebridge_data[reading] = parsed_json[reading]
+                elif reading in self.valid_enviro_non_aqi_readings:
+                    if self.enviro_config['Capture Temp/Hum/Bar/Lux']:
+                        homebridge_data[reading] = parsed_json[reading]
+                        domoticz_data[reading] = parsed_json[reading]
                 else:
-                    homebridge_data[reading] = parsed_json[reading]
-        #print('Outdoor Air Quality Update. Overall AQI:', self.max_aqi, 'Individual AQI:', individual_aqi)
-        #print('Homebridge Data:', homebridge_data)
-        #print('Domoticz Data:', parsed_json)
-        homebridge.update_outdoor_aqi(self.max_aqi, homebridge_data, individual_aqi, self.PM2_5_alert_level)
-        domoticz.update_outdoor_aqi(self.max_aqi, parsed_json)
+                    pass # Ignore other readings  
+            #print(self.name, 'Air Quality Update. Overall AQI:', self.max_aqi, 'Individual AQI:', individual_aqi)
+            #print(self.name, 'Domoticz Data:', domoticz_data)
+            #print(self.name, 'Homebridge Data:', homebridge_data)
+            homebridge.update_enviro_aqi(self.name, self.enviro_config, self.max_aqi, homebridge_data, individual_aqi, self.PM2_5_alert_level, gas_readings)
+            domoticz.update_enviro_aqi(self.name, self.enviro_config, self.max_aqi, domoticz_data)
 
     def capture_luftdaten_data(self, sensor_id): # Call this if there has been no sensor data for 15 minutes
         try:
             async def main():
                 #try:
-                """Sample code to retrieve the data."""
                 async with aiohttp.ClientSession() as session:
                     data = Luftdaten(sensor_id, loop, session)
                     await data.get_data()
@@ -4060,7 +4215,7 @@ class AqiClass(object):
                         #print("Sensor values:", data.values)
                         # Print the coordinates for the sensor
                         #print("Location:", data.meta['latitude'], data.meta['longitude'])
-                        captured_data = {"NH3": 0, "Oxi": 0, "Red": 0, "P2.5": data.values["P2"], "P10": data.values["P1"], "P1": 0}
+                        captured_data = {"P2.5": data.values["P2"], "P10": data.values["P1"], "P1": 0}
                         print('Luftdaten Data Captured. PM2.5:', captured_data['P2.5'],'ug/m3, PM10:', captured_data['P10'], 'ug/m3')
                         return "Data Captured", captured_data
                 #except ConnectionRefusedError as e:
@@ -4082,51 +4237,62 @@ class AqiClass(object):
             loop = asyncio.get_event_loop()
             message, captured_data = loop.run_until_complete(main())
             if message == "Data Captured":
-                self.capture_readings(captured_data)
+                self.capture_readings('Luftdaten', captured_data)
         except:
-            print('Luftdaten Error, No Outdoor AQI Data Available')
+            print('Luftdaten Error, No Outdoor Enviro Data Available')
             
 if __name__ == '__main__': # This is where to overall code kicks off
     # Create a Home Manager instance
-    mgr = NorthcliffHomeManagerClass(log_aircon_cost_data = True, log_aircon_damper_data = True, log_aircon_temp_data = True, load_previous_aircon_effectiveness = True, perform_homebridge_config_check = False)
+    mgr = NorthcliffHomeManagerClass(log_aircon_cost_data = True, log_aircon_damper_data = False, log_aircon_temp_data = False,
+                                     load_previous_aircon_effectiveness = True, perform_homebridge_config_check = False)
     # Create a Homebridge instance
     homebridge = HomebridgeClass(mgr.outdoor_multisensor_names, mgr.outdoor_sensors_homebridge_name, mgr.aircon_config, mgr.auto_air_purifier_names,
                                  mgr.window_blind_config, mgr.door_sensor_names_locations, mgr.light_dimmer_names_device_id, mgr.colour_light_dimmer_names, mgr.air_purifier_names,
-                                 mgr.multisensor_names, mgr.powerpoint_names_device_id, mgr.flood_sensor_names)
+                                 mgr.multisensor_names, mgr.powerpoint_names_device_id, mgr.flood_sensor_names, mgr.enviro_config)
     # Create a Domoticz instance
     domoticz = DomoticzClass()
     if mgr.doorbell_present:
         # Create Doorbell instance
         doorbell = DoorbellClass()
-    # Use a dictionary comprehension to create an aircon instance for each aircon.
-    aircon = {aircon_name: AirconClass(aircon_name, mgr.aircon_config[aircon_name], mgr.log_aircon_cost_data,
+    if mgr.aircons_present:
+        # Use a dictionary comprehension to create an aircon instance for each aircon.
+        aircon = {aircon_name: AirconClass(aircon_name, mgr.aircon_config[aircon_name], mgr.log_aircon_cost_data,
                                       mgr.log_aircon_damper_data, mgr.log_aircon_temp_data) for aircon_name in mgr.aircon_config}
-    # Use a dictionary comprehension to create a window blind instance for each window blind
-    window_blind = {blind_room: WindowBlindClass(blind_room, mgr.window_blind_config[blind_room]) for blind_room in mgr.window_blind_config}    
-    # Use a dictionary comprehension to create a multisensor instance for each multisensor
-    multisensor = {name: MultisensorClass(name, mgr.aircon_temp_sensor_names, mgr.aircon_sensor_name_aircon_map, mgr.window_blind_config,
+    if mgr.window_blinds_present:
+        # Use a dictionary comprehension to create a window blind instance for each window blind
+        window_blind = {blind_room: WindowBlindClass(blind_room, mgr.window_blind_config[blind_room]) for blind_room in mgr.window_blind_config}    
+    if mgr.multisensors_present:
+        # Use a dictionary comprehension to create a multisensor instance for each multisensor
+        multisensor = {name: MultisensorClass(name, mgr.aircon_temp_sensor_names, mgr.aircon_sensor_name_aircon_map, mgr.window_blind_config,
                                           mgr.log_aircon_temp_data) for name in mgr.multisensor_names}      
-    # Use a dictionary comprehension to create a door sensor instance for each door
-    door_sensor = {name: DoorSensorClass(name, mgr.door_sensor_names_locations[name], mgr.window_blind_config, mgr.doorbell_door) for name in mgr.door_sensor_names_locations}      
-    # Use a dictionary comprehension to create a light dimmer instance for each dimmer, with its idx number, initial switch state as False and initial brightness value 0%
-    light_dimmer = {name: LightDimmerClass(name, mgr.light_dimmer_names_device_id[name], False, 0) for name in mgr.light_dimmer_names_device_id}
-    # Use a dictionary comprehension to create a powerpoint instance for each powerpoint, with its idx number, initial switch state as False
-    powerpoint = {name: PowerpointClass(name, mgr.powerpoint_names_device_id[name], 0) for name in mgr.powerpoint_names_device_id}
-    # Use a dictionary comprehension to create a flood sensor instance for each flood sensor
-    flood_sensor = {name: FloodSensorClass(name) for name in mgr.flood_sensor_names}
+    if mgr.door_sensors_present:
+        # Use a dictionary comprehension to create a door sensor instance for each door
+        door_sensor = {name: DoorSensorClass(name, mgr.door_sensor_names_locations[name], mgr.window_blind_config, mgr.doorbell_door) for name in mgr.door_sensor_names_locations}      
+    if mgr.light_dimmers_present:
+        # Use a dictionary comprehension to create a light dimmer instance for each dimmer, with its idx number, initial switch state as False and initial brightness value 0%
+        light_dimmer = {name: LightDimmerClass(name, mgr.light_dimmer_names_device_id[name], False, 0) for name in mgr.light_dimmer_names_device_id}
+    if mgr.powerpoints_present:
+        # Use a dictionary comprehension to create a powerpoint instance for each powerpoint, with its idx number, initial switch state as False
+        powerpoint = {name: PowerpointClass(name, mgr.powerpoint_names_device_id[name], 0) for name in mgr.powerpoint_names_device_id}
+    if mgr.flood_sensors_present:
+        # Use a dictionary comprehension to create a flood sensor instance for each flood sensor
+        flood_sensor = {name: FloodSensorClass(name) for name in mgr.flood_sensor_names}
     if mgr.garage_door_present:
         # Create a Garage Door Controller instance
         garage_door = GaragedoorClass()
-    if mgr.air_purifier_present:
+    if mgr.air_purifiers_present:
         # Create a Foobot instance
         key = "<foobot_api_key>"
         fb = Foobot(key, "<foobot_user_name>", "<foobot_user_password>")
         air_purifier_devices = fb.devices() # Capture foobot device data
         # Use a dictionary comprehension to create an air purifier instance for each air purifier
         air_purifier = {name: BlueAirClass(name, air_purifier_devices, mgr.air_purifier_names[name]) for name in mgr.air_purifier_names}
-    if mgr.aquarium_present:
-        # Create a Seneye Aquarium Sensor Instance
+    if mgr.aquarium_monitor_present:
+        # Create a Seneye Aquarium Sensor instance
         aquarium_sensor = SeneyeClass("<seneye_user_name>", "<seneye_user_password>")
+    if mgr.enviro_monitors_present:
+        # Create Enviro Monitor instance for each Enviro Name
+        enviro_monitor = {name: EnviroClass(name, mgr.enviro_config[name]) for name in mgr.enviro_config}
     # Create and set up an mqtt instance                             
     client = mqtt.Client("<mqtt client name>")
     client.on_connect = mgr.on_connect
