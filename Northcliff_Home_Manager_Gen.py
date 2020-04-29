@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.52 - Gen
+#Northcliff Home Manager - 8.53 - Gen
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -371,7 +371,7 @@ class NorthcliffHomeManagerClass(object):
                             print('Seneye Message Ignored: Comms Error') # Ignore bad Seneye comms messages
                         previous_aquarium_capture_time = time.time()
                 if self.enviro_monitors_present and self.enable_outdoor_enviro_monitor_luftdaten_backup:
-                    if time.time() - self.enviro_config['Outdoor']['Capture Time'] > 300: # Capture Luftdaten Air Quality if the Outdoor Enviro Monitor is unavailable
+                    if time.time() - self.enviro_config['Outdoor']['Capture Time'] > 600: # Capture Luftdaten Air Quality if the Outdoor Enviro Monitor is unavailable
                         if time.time() - previous_luftdaten_capture_time > 900:
                             print('No message from Outdoor Northcliff Enviro Monitor, using Luftdaten from station', self.enviro_config['Outdoor']['Luftdaten Sensor ID'])
                             enviro_monitor['Outdoor'].capture_luftdaten_data(self.enviro_config['Outdoor']['Luftdaten Sensor ID'])
