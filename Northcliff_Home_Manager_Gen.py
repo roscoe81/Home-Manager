@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.53 - Gen
+#Northcliff Home Manager - 8.56 - Gen
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -24,6 +24,7 @@ class NorthcliffHomeManagerClass(object):
         self.perform_homebridge_config_check = perform_homebridge_config_check # Flags that a homebridge config check is to be performed on start-up
         self.home_manager_file_name = '<Your Home Manager File Path and Name>'
         self.key_state_log_file_name = '<Your Key State Log File Path and Name>'
+        self.watchdog_file_name = '<Your Watchdog File Path and Name>'
         self.light_dimmers_present = True # Enables Light Dimmer control
         self.multisensors_present = True # Enable Multisensor monitoring
         self.doorbell_present = True # Enables doorbell control
@@ -127,13 +128,14 @@ class NorthcliffHomeManagerClass(object):
         self.universal_air_purifier_fan_speed = 1
         self.air_purifier_linking_times = {'Start': 9, 'Stop': 20}
         enviro_capture_time = time.time()
-        self.enviro_config = {'Outdoor': {'mqtt Topic': 'Outdoor EM0', 'Capture Temp/Hum/Bar/Lux': True, 'Capture Time': enviro_capture_time, 'Luftdaten Sensor ID': 25667,
+        self.enviro_config = {'Outdoor': {'mqtt Topic': 'Outdoor EM0', 'Capture Temp/Hum/Bar/Lux': True, 'Capture Time': enviro_capture_time, 'Luftdaten Sensor ID': 99999,
                                           'Device IDs': {'P1': 784, 'P2.5': 778, 'P10': 779, 'AQI': 780, 'NH3': 781, 'Oxi': 782, 'Red': 783,
                                                           'Temp': 840, 'Hum': 840, 'Bar': 840, 'Lux':842}},
                               'Indoor': {'mqtt Topic': 'Indoor EM1', 'Capture Temp/Hum/Bar/Lux': True,
                                           'Device IDs': {'P1': 789, 'P2.5': 790, 'P10': 791, 'AQI': 792, 'NH3': 795, 'Oxi': 793, 'Red': 794,
-                                                          'Temp': 839, 'Hum': 839, 'Bar': 839, 'Lux':841}}}
+                                                          'Temp': 839, 'Hum': 839, 'Bar': 839, 'Lux':841, 'CO2': 847, 'VOC': 848}}}
         self.enable_outdoor_enviro_monitor_luftdaten_backup = True # Enable Luftdaten readings if no PM readings from outdoor Enviro Monitor
+        self.watchdog_update_time = 0
                                
     def on_connect(self, client, userdata, flags, rc):
         # Sets up the mqtt subscriptions. Subscribing in on_connect() means that if we lose the connection and reconnect then subscriptions will be renewed.
@@ -208,24 +210,27 @@ class NorthcliffHomeManagerClass(object):
             key_state_log['Aircon Thermo Mode'] = {aircon_name: aircon[aircon_name].settings['indoor_thermo_mode'] for aircon_name in self.aircon_config}
             key_state_log['Aircon Thermo Active'] = {aircon_name: aircon[aircon_name].settings['indoor_zone_sensor_active'] for aircon_name in self.aircon_config}
         if self.air_purifiers_present:
-            key_state_log['Air Purifier Max Co2'] = {air_purifier_name: air_purifier[air_purifier_name].max_co2 for air_purifier_name in self.auto_air_purifier_names}            
+            key_state_log['Air Purifier Max Co2'] = {air_purifier_name: air_purifier[air_purifier_name].max_co2 for air_purifier_name in self.auto_air_purifier_names}
+        if self.enviro_monitors_present:
+            for enviro_name in self.enviro_config:
+                if enviro_name == 'Indoor' and 'CO2' in self.enviro_config[enviro_name]['Device IDs']:
+                    key_state_log['Enviro Max CO2'] = enviro_monitor[enviro_name].max_CO2
         with open(self.key_state_log_file_name, 'w') as f:
             f.write(json.dumps(key_state_log))   
 
     def retrieve_key_states(self):
-        name = self.key_state_log_file_name
-        f = open(name, 'r')
-        parsed_key_states = json.loads(f.read())
+        with open(self.key_state_log_file_name, 'r') as f:
+            parsed_key_states = json.loads(f.read())
         print('Retrieved Key States', parsed_key_states)
         print ('Previous logging reason was', parsed_key_states['Reason'])
-        if self.door_sensors_present:
+        if self.door_sensors_present and 'Door State' in parsed_key_states:
             for name in parsed_key_states['Door State']:
                 door_sensor[name].current_door_opened = parsed_key_states['Door State'][name]
                 door_sensor[name].previous_door_opened = parsed_key_states['Door State'][name]
                 homebridge.update_door_state(name, self.door_sensor_names_locations[name], parsed_key_states['Door State'][name], False)
                 if door_sensor[name].doorbell_door:
                     doorbell.update_doorbell_door_state(self.doorbell_door, parsed_key_states['Door State'][name])
-        if self.window_blinds_present:
+        if self.window_blinds_present and 'Blind Status' in parsed_key_states:
             for blind in parsed_key_states['Blind Status']:
                 window_blind[blind].window_blind_config['status'] = parsed_key_states['Blind Status'][blind]
                 homebridge.update_blind_status(blind, window_blind[blind].window_blind_config)
@@ -235,11 +240,11 @@ class NorthcliffHomeManagerClass(object):
                 homebridge.update_blind_target_temps(blind, parsed_key_states['Blind High Temp'][blind], parsed_key_states['Blind Low Temp'][blind])
                 window_blind[blind].auto_override = parsed_key_states['Blind Auto Override'][blind]
                 homebridge.set_auto_blind_override_button(blind, parsed_key_states['Blind Auto Override'][blind])
-        if self.powerpoints_present:
+        if self.powerpoints_present and 'Powerpoint State' in parsed_key_states:
             for name in parsed_key_states['Powerpoint State']:
                 powerpoint[name].on_off(parsed_key_states['Powerpoint State'][name])
                 homebridge.update_powerpoint_state(name, parsed_key_states['Powerpoint State'][name])
-        if self.aircons_present:
+        if self.aircons_present and 'Aircon Thermostat Status' in parsed_key_states:
             for aircon_name in self.aircon_config:
                 for thermostat in parsed_key_states['Aircon Thermostat Status'][aircon_name]:
                     aircon[aircon_name].thermostat_status[thermostat]['Target Temperature'] = parsed_key_states['Aircon Thermostat Status'][aircon_name][thermostat]['Target Temperature']
@@ -250,9 +255,14 @@ class NorthcliffHomeManagerClass(object):
                 aircon[aircon_name].settings['indoor_thermo_mode'] = parsed_key_states['Aircon Thermo Mode'][aircon_name]
                 aircon[aircon_name].settings['indoor_zone_sensor_active'] = parsed_key_states['Aircon Thermo Active'][aircon_name]
                 aircon[aircon_name].update_zone_temps()
-        if self.air_purifiers_present:
+        if self.air_purifiers_present and 'Air Purifier Max Co2' in parsed_key_states:
             for air_purifier_name in parsed_key_states['Air Purifier Max Co2']:
                 air_purifier[air_purifier_name].max_co2 = parsed_key_states['Air Purifier Max Co2'][air_purifier_name]
+        if self.enviro_monitors_present and 'Enviro Max CO2' in parsed_key_states:
+            for enviro_name in self.enviro_config:
+                if enviro_name == 'Indoor' and 'CO2' in self.enviro_config[enviro_name]['Device IDs']:
+                    enviro_monitor[enviro_name].max_CO2 = parsed_key_states['Enviro Max CO2']
+            
 
     def air_purifier_linking_hour(self):
         today = datetime.now()
@@ -314,6 +324,10 @@ class NorthcliffHomeManagerClass(object):
             previous_aquarium_reading_time = 0 # Initialise aquarium sensor reading time
             previous_luftdaten_capture_time = 0 # Initialise luftdaten capture time
             while True: # The main Home Manager Loop
+                if time.time() - self.watchdog_update_time >= 60: # Write to the watchdog log every minute
+                    with open(self.watchdog_file_name, 'w') as f:
+                        f.write('Home Manager Script Alive')
+                    self.watchdog_update_time = time.time()
                 if self.aircons_present:
                     for aircon_name in mgr.aircon_config:
                         aircon[aircon_name].control_aircon() # For each aircon, call the method that controls the aircon.
@@ -502,18 +516,15 @@ class HomebridgeClass(object):
         self.enviro_config = enviro_config
         self.enviro_aqi_format = {'name': ' AQI', 'service_name': ' AQI', 'service': 'AirQualitySensor',
                                    'characteristics_properties': {'PM10Density': {}, 'PM2_5Density': {}, 'NitrogenDioxideDensity': {}}}
+        self.enviro_aqi_voc_format = {'name': ' AQI', 'service_name': ' AQI', 'service': 'AirQualitySensor',
+                                   'characteristics_properties': {'PM10Density': {}, 'PM2_5Density': {}, 'NitrogenDioxideDensity': {}, 'VOCDensity': {}}}   
         self.enviro_reducing_format = {'name': ' Reducing', 'service_name': ' Reducing', 'service': 'AirQualitySensor', 'characteristics_properties': {'NitrogenDioxideDensity': {}}}
         self.enviro_ammonia_format = {'name': ' Ammonia', 'service_name': ' Ammonia', 'service': 'AirQualitySensor', 'characteristics_properties': {'NitrogenDioxideDensity': {}}}
         self.enviro_PM2_5_alert_format = {'name': ' PM2.5 Alert', 'service_name': ' PM2.5 Alert', 'service' :'MotionSensor', 'characteristics_properties': {'MotionDetected':{}}}
-        #self.enviro_aqi_service_name_map = {name: name + self.enviro_aqi_format['name'] for name in self.enviro_config}
-        #self.enviro_reducing_service_name_map = {name: name + self.enviro_reducing_format['name'] for name in self.enviro_config}
-        #self.enviro_ammonia_service_name_map = {name: name + self.enviro_ammonia_format['name'] for name in self.enviro_config}
-        #self.enviro_PM2_5_service_name_map = {name: name + self.enviro_PM2_5_alert_format['name'] for name in self.enviro_config}
         self.enviro_temp_format = {'name': ' Env Temp', 'service': 'TemperatureSensor', 'service_name': ' Env Temp', 'characteristics_properties': {}}
         self.enviro_hum_format = {'name': ' Env Hum', 'service': 'HumiditySensor', 'service_name': ' Env Hum', 'characteristics_properties': {}}
         self.enviro_lux_format = {'name': ' Env Lux', 'service': 'LightSensor', 'service_name': ' Env Lux', 'characteristics_properties': {}}
-        #self.enviro_temp_service_name_map = {name: name + self.enviro_temp_format['name'] for name in self.enviro_config}
-        
+        self.enviro_CO2_level_format = {'name': ' CO2', 'service_name': ' CO2', 'service' :'CarbonDioxideSensor', 'characteristics_properties': {'CarbonDioxideLevel': {}, 'CarbonDioxidePeakLevel': {}}}
 
         # Set up config
         self.current_config = {}
@@ -769,16 +780,18 @@ class HomebridgeClass(object):
         if mgr.enviro_monitors_present == True:
             enviro_monitors_homebridge_config = {}
             for enviro_monitor in self.enviro_config:
-                enviro_monitors_homebridge_config[enviro_monitor +
-                                                  self.enviro_aqi_format['name']] = {enviro_monitor + self.enviro_aqi_format['service_name']:
-                                                                                      {self.enviro_aqi_format['service']:
-                                                                                       self.enviro_aqi_format['characteristics_properties']}}
-                enviro_monitors_homebridge_config[enviro_monitor +
-                                                  self.enviro_reducing_format['name']] = {enviro_monitor + self.enviro_reducing_format['service_name']:
+                if 'VOC' in self.enviro_config[enviro_monitor]['Device IDs']: # Add VOC if it's an Indoor Plus Enviro Monitor
+                    enviro_monitors_homebridge_config[enviro_monitor + self.enviro_aqi_format['name']] = {enviro_monitor + self.enviro_aqi_voc_format['service_name']:
+                                                                                      {self.enviro_aqi_voc_format['service']:
+                                                                                       self.enviro_aqi_voc_format['characteristics_properties']}}
+                else:
+                    enviro_monitors_homebridge_config[enviro_monitor + self.enviro_aqi_format['name']] = {enviro_monitor + self.enviro_aqi_format['service_name']:
+                                                                                          {self.enviro_aqi_format['service']:
+                                                                                           self.enviro_aqi_format['characteristics_properties']}}
+                enviro_monitors_homebridge_config[enviro_monitor + self.enviro_reducing_format['name']] = {enviro_monitor + self.enviro_reducing_format['service_name']:
                                                                                      {self.enviro_reducing_format['service']:
                                                                                       self.enviro_reducing_format['characteristics_properties']}}
-                enviro_monitors_homebridge_config[enviro_monitor +
-                                                  self.enviro_ammonia_format['name']] = {enviro_monitor + self.enviro_ammonia_format['service_name']:
+                enviro_monitors_homebridge_config[enviro_monitor + self.enviro_ammonia_format['name']] = {enviro_monitor + self.enviro_ammonia_format['service_name']:
                                                                                       {self.enviro_ammonia_format['service']:
                                                                                         self.enviro_ammonia_format['characteristics_properties']}}
                 enviro_monitors_homebridge_config[enviro_monitor + self.enviro_PM2_5_alert_format['name']] = {enviro_monitor +
@@ -794,9 +807,12 @@ class HomebridgeClass(object):
                                                                                                            self.enviro_hum_format['characteristics_properties']}}
                     enviro_monitors_homebridge_config[enviro_monitor + self.enviro_lux_format['name']] = {enviro_monitor + self.enviro_lux_format['service_name']:
                                                                                                           {self.enviro_lux_format['service']:
-                                                                                                           self.enviro_lux_format['characteristics_properties']}}       
+                                                                                                           self.enviro_lux_format['characteristics_properties']}}
+                if 'CO2' in self.enviro_config[enviro_monitor]['Device IDs']: # Add CO2 if it's an Indoor Plus Enviro Monitor
+                    enviro_monitors_homebridge_config[enviro_monitor + self.enviro_CO2_level_format['name']] = {enviro_monitor + self.enviro_CO2_level_format['service_name']:
+                                                                                      {self.enviro_CO2_level_format['service']: self.enviro_CO2_level_format['characteristics_properties']}}                
         else:
-            enviro_monitors_homebridge_config = {}
+            enviro_monitors_homebridge_config = {}        
         # Build entire required_homebridge_config
         required_homebridge_config = {**blinds_homebridge_config, **door_sensors_homebridge_config, **garage_door_homebridge_config, **reboot_homebridge_config, **light_dimmers_homebridge_config,
                                       **aircon_homebridge_config, **doorbell_homebridge_config, **air_purifiers_homebridge_config, **multisensors_homebridge_config, **powerpoints_homebridge_config,
@@ -1837,7 +1853,7 @@ class HomebridgeClass(object):
             homebridge_json['value'] = 1
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
 
-    def update_enviro_aqi(self, name, enviro_config, aqi, parsed_json, individual_aqi, PM2_5_alert_level, gas_readings):
+    def update_enviro_aqi(self, name, enviro_config, aqi, parsed_json, individual_aqi, PM2_5_alert_level, gas_readings, max_CO2, CO2_threshold):
         homebridge_json = {}
         homebridge_json['name'] = name + self.enviro_aqi_format['name']
         homebridge_json['service_name'] = name + self.enviro_aqi_format['service_name']
@@ -1850,6 +1866,10 @@ class HomebridgeClass(object):
         homebridge_json['characteristic'] = 'PM10Density'
         homebridge_json['value'] = round(parsed_json['P10'], 0)
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        if 'VOC' in enviro_config['Device IDs'] and 'VOC' in parsed_json:
+            homebridge_json['characteristic'] = 'VOCDensity'
+            homebridge_json['value'] = round(parsed_json['VOC'], 0)
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         if gas_readings:
             homebridge_json['characteristic'] = 'NitrogenDioxideDensity'
             homebridge_json['value'] = parsed_json['Oxi']
@@ -1869,6 +1889,21 @@ class HomebridgeClass(object):
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
             homebridge_json['characteristic'] = 'NitrogenDioxideDensity'
             homebridge_json['value'] = parsed_json['NH3']
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        if 'CO2' in enviro_config['Device IDs'] and 'CO2' in parsed_json:
+            homebridge_json['name'] = name + self.enviro_CO2_level_format['name']
+            homebridge_json['service_name'] = name + self.enviro_CO2_level_format['service_name']
+            homebridge_json['characteristic'] = 'CarbonDioxideLevel'
+            homebridge_json['value'] = round(parsed_json['CO2'], 0)
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['characteristic'] = 'CarbonDioxideDetected'
+            if homebridge_json['value'] < CO2_threshold:
+                homebridge_json['value'] = 0
+            else:
+                homebridge_json['value'] = 1
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['characteristic'] = 'CarbonDioxidePeakLevel'
+            homebridge_json['value'] = max_CO2
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         homebridge_json['name'] = name + self.enviro_PM2_5_alert_format['name']
         homebridge_json['service_name'] = name + self.enviro_PM2_5_alert_format['service_name']
@@ -2136,24 +2171,33 @@ class DomoticzClass(object): # Manages communications to and from the z-wave obj
         client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
 
     def update_enviro_aqi(self, name, enviro_config, aqi, parsed_json):
-        #print('Incoming Domoticz Outdoor AQI', parsed_json)
+        #print('Incoming Domoticz Enviro', parsed_json, enviro_config)
         domoticz_json = {}
         domoticz_json['nvalue'] = 0
         non_aqi_message = {}
         for measurement in enviro_config['Device IDs']:
             if (measurement == 'Temp' or measurement == 'Hum' or measurement == 'Bar') and measurement in parsed_json:
-                non_aqi_message[measurement] = parsed_json[measurement]       
+                non_aqi_message[measurement] = parsed_json[measurement]
+            elif (measurement == 'VOC' or measurement == 'CO2') and measurement in parsed_json:
+                domoticz_json['idx'] = enviro_config['Device IDs'][measurement]
+                domoticz_json['nvalue'] = parsed_json[measurement]
+                domoticz_json['svalue'] = ""
+                #print('Domoticz', domoticz_json)
+                client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
             elif measurement != 'AQI' and measurement in parsed_json:
                 domoticz_json['idx'] = enviro_config['Device IDs'][measurement]
+                domoticz_json['nvalue'] = 0
                 domoticz_json['svalue'] = str(parsed_json[measurement])
                 #print('Domoticz', domoticz_json)
                 client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
         domoticz_json['idx'] = enviro_config['Device IDs']['AQI']
+        domoticz_json['nvalue'] = 0
         domoticz_json['svalue'] = str(aqi)
         #print('Domoticz', domoticz_json)
         client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
         if non_aqi_message: # If there are some climate messages
             domoticz_json['idx'] = enviro_config['Device IDs']['Temp']
+            domoticz_json['nvalue'] = 0
             domoticz_json['svalue'] = str(non_aqi_message['Temp']) + ';'+ str(non_aqi_message['Hum'][0]) + ';' + non_aqi_message['Hum'][1] + ';' + str(non_aqi_message['Bar'][0]) + ';' + non_aqi_message['Bar'][1]
             #print('Domoticz', domoticz_json)
             client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
@@ -3772,8 +3816,8 @@ class AirconClass(object):
         # Read log file
         print('Retrieving', self.name, 'Effectiveness Log File')
         name = self.aircon_config['Effectiveness Log']
-        f = open(name, 'r')
-        logged_data = f.read()
+        with open(name, 'r') as f:
+            logged_data = f.read()
         logged_data = logged_data + ']'
         if "Mode" in logged_data: # Only parse the data if something has been logged
             parsed_data = json.loads(logged_data)
@@ -3802,8 +3846,8 @@ class AirconClass(object):
     def populate_aircon_power_status(self):
         # Read log file
         name = self.aircon_config['Cost Log']
-        f = open(name, 'r')
-        data_log = f.read()
+        with open(name, 'r') as f:
+            data_log = f.read()
         data_log = data_log + ']'
         if "Total Cost" in data_log: # Only retrieve data is something has been logged
             parsed_data = json.loads(data_log)
@@ -3887,7 +3931,7 @@ class FoobotDevice:
                          period=0,
                          sampling=0)
         try:
-            response_json = self.session.get(url, headers=self.auth_header).json()
+            response_json = self.session.get(url, headers=self.auth_header, timeout=5).json()
             #print("Readings json", response_json)
             return response_json
         except requests.exceptions.ConnectionError as blueair_comms_error:
@@ -3914,7 +3958,7 @@ class BlueAirClass(object):
         self.name = name
         self.max_co2 = 0
         self.air_readings = {'part_2_5': 1, 'co2': 1, 'voc': 1, 'pol':1}
-        self.air_reading_bands = {'part_2_5':[6, 12, 35, 150], 'co2': [500, 1000, 1600, 2000], 'voc': [200, 350, 450, 750], 'pol': [20, 45, 60, 80]}
+        self.air_reading_bands = {'part_2_5':[6, 12, 35, 150], 'co2': [500, 1000, 1600, 2000], 'voc': [120, 220, 660, 2200], 'pol': [20, 45, 60, 80]}
         self.co2_threshold = self.air_reading_bands['co2'][2]
         self.part_2_5_threshold = self.air_reading_bands['part_2_5'][2]
         self.previous_air_purifier_settings = {'Mode': 'null', 'Fan Speed': 'null', 'Child Lock':'null', 'LED Brightness': 'null', 'Filter Status':'null'}
@@ -4001,7 +4045,14 @@ class BlueAirClass(object):
             header = self.device.auth_header
             uuid = self.device.uuid
             body = {"currentValue": "manual", "scope": "device", "defaultValue": "auto", "name": "mode", "uuid": uuid}
-            response = self.session.post(url, headers=header, json=body)
+            try:
+                response = self.session.post(url, headers=header, json=body, timeout=5)
+            except requests.exceptions.ConnectionError as blueair_comms_error:
+                print('BlueAir Manual Mode Connection Error', blueair_comms_error)
+            except requests.exceptions.Timeout as blueair_comms_error:
+                print('BlueAir Manual Mode Timeout Error', blueair_comms_error)
+            except requests.exceptions.RequestException as blueair_comms_error:
+                print('BlueAir Manual Mode Request Error', blueair_comms_error)
 
     def auto_mode(self):
         if self.auto:
@@ -4010,7 +4061,14 @@ class BlueAirClass(object):
             header = self.device.auth_header
             uuid = self.device.uuid
             body = {"currentValue": "auto", "scope": "device", "defaultValue": "auto", "name": "mode", "uuid": uuid}
-            response = self.session.post(url, headers=header, json=body)
+            try:
+                response = self.session.post(url, headers=header, json=body, timeout=5)
+            except requests.exceptions.ConnectionError as blueair_comms_error:
+                print('BlueAir Auto Mode Connection Error', blueair_comms_error)
+            except requests.exceptions.Timeout as blueair_comms_error:
+                print('BlueAir Auto Mode Timeout Error', blueair_comms_error)
+            except requests.exceptions.RequestException as blueair_comms_error:
+                print('BlueAir Auto Mode Request Error', blueair_comms_error)
         else: # Set Fan Speed to 1 of it's a manual air purifier
             self.set_fan_speed('1')
 
@@ -4020,7 +4078,14 @@ class BlueAirClass(object):
         header = self.device.auth_header
         uuid = self.device.uuid
         body = {"currentValue": fan_speed, "scope": "device", "defaultValue": "1", "name": "fan_speed", "uuid": uuid}
-        response = self.session.post(url, headers=header, json=body)
+        try:
+            response = self.session.post(url, headers=header, json=body, timeout=5)
+        except requests.exceptions.ConnectionError as blueair_comms_error:
+            print('BlueAir Fan Speed Connection Error', blueair_comms_error)
+        except requests.exceptions.Timeout as blueair_comms_error:
+            print('BlueAir Fan Speed Timeout Error', blueair_comms_error)
+        except requests.exceptions.RequestException as blueair_comms_error:
+            print('BlueAir Fan Speed Request Error', blueair_comms_error)
 
     def set_led_brightness(self, brightness):
         #print('Setting LED Brightness for the', self.device.name , 'Air Purifier')
@@ -4028,7 +4093,14 @@ class BlueAirClass(object):
         header = self.device.auth_header
         uuid = self.device.uuid
         body = {"currentValue": brightness, "scope": "device", "defaultValue": "4", "name": "brightness", "uuid": uuid}
-        response = self.session.post(url, headers=header, json=body)
+        try:
+            response = self.session.post(url, headers=header, json=body, timeout=5)
+        except requests.exceptions.ConnectionError as blueair_comms_error:
+            print('BlueAir LED Brightness Connection Error', blueair_comms_error)
+        except requests.exceptions.Timeout as blueair_comms_error:
+            print('BlueAir LED Brightness Timeout Error', blueair_comms_error)
+        except requests.exceptions.RequestException as blueair_comms_error:
+            print('BlueAir LED Brightness Request Error', blueair_comms_error)
         
     def set_child_lock(self, lock):
         #print('Setting Child Lock for the', self.device.name , 'Air Purifier')
@@ -4036,13 +4108,20 @@ class BlueAirClass(object):
         header = self.device.auth_header
         uuid = self.device.uuid
         body = {"currentValue": lock, "scope": "device", "defaultValue": "0", "name": "child_lock", "uuid": uuid}
-        response = self.session.post(url, headers=header, json=body)
-
+        try:
+            response = self.session.post(url, headers=header, json=body, timeout=5)
+        except requests.exceptions.ConnectionError as blueair_comms_error:
+            print('BlueAir Child Lock Connection Error', blueair_comms_error)
+        except requests.exceptions.Timeout as blueair_comms_error:
+            print('BlueAir Child Lock Timeout Error', blueair_comms_error)
+        except requests.exceptions.RequestException as blueair_comms_error:
+            print('BlueAir Child Lock Request Error', blueair_comms_error)
+            
     def get_device_settings(self):
         url = '{base}/device/{uuid}/attributes/'
         url = url.format(base=self.base_url, uuid=self.device.uuid)
         try:
-            response_json = self.session.get(url, headers=self.device.auth_header).json()
+            response_json = self.session.get(url, headers=self.device.auth_header, timeout=5).json()
             #print("Settings json", response_json)
             return response_json
         except requests.exceptions.ConnectionError as blueair_comms_error:
@@ -4070,7 +4149,7 @@ class SeneyeClass:
         """Get list of Seneye devices owned by logged in user."""
         url = '{base}/devices?user={user}&pwd={password}'.format(base=self.BASE_URL,
                                                    user=self.username,password=self.password)
-        req = self.session.get(url)
+        req = self.session.get(url, timeout=5)
         return req.json()
     
     def latest(self):
@@ -4079,7 +4158,7 @@ class SeneyeClass:
         url = url.format(base=self.BASE_URL,user=self.username,password=self.password)
         try:
             valid_reading = True
-            readings = self.session.get(url,).json()
+            readings = self.session.get(url, timeout=5).json()
             out_of_water = readings[0]['status']['out_of_water']
             if out_of_water != "0":
                 print('Seneye Out of Water')
@@ -4125,14 +4204,18 @@ class EnviroClass(object):
     def __init__(self, name, enviro_config):
         #print ('Created Enviro Instance', name, enviro_config)
         self.name = name
-        self.valid_enviro_aqi_readings = ['P1', 'P2.5', 'P10', 'Red', 'Oxi', 'NH3']
-        self.valid_enviro_aqi_readings_no_gas = ['P1', 'P2.5', 'P10']
+        self.valid_enviro_aqi_readings = ['P1', 'P2.5', 'P10', 'Red', 'Oxi', 'NH3', 'CO2', 'VOC']
+        self.valid_enviro_aqi_readings_no_gas = ['P1', 'P2.5', 'P10', 'CO2', 'VOC']
         self.valid_enviro_non_aqi_readings = ['Temp', 'Hum', 'Bar', 'Lux']
         self.valid_luftdaten_readings = ['P2.5', 'P10']
-        self.air_reading_bands = {'P1':[0, 6, 17, 27, 35], 'P2.5':[0, 11, 35, 53, 70], 'P10': [0, 16, 50, 75, 100], 'NH3': [0, 5, 30, 50, 75], 'Red': [0, 25, 30, 50, 75], 'Oxi': [0, 0.5, 1, 3, 5]}
+        self.air_reading_bands = {'P1':[0, 6, 17, 27, 35], 'P2.5':[0, 11, 35, 53, 70], 'P10': [0, 16, 50, 75, 100],
+                                  'NH3': [0, 6, 2, 10, 15], 'Red': [0, 6, 10, 50, 75], 'Oxi': [0, 0.2, 0.4, 0.8, 1],
+                                  'CO2': [0, 500, 1000, 1600, 2000], 'VOC': [0, 120, 220, 660, 2200]}
         self.PM2_5_alert_level = 35
         self.max_aqi = 1
         self.enviro_config = enviro_config
+        self.max_CO2 = 0
+        self.CO2_threshold = self.air_reading_bands['CO2'][2]
 
     def capture_readings(self, source, parsed_json):
         #print('Capturing Enviro Readings', source, parsed_json)
@@ -4188,6 +4271,12 @@ class EnviroClass(object):
                         homebridge_data[reading] = round(parsed_json[reading] * 17/24.45, 2)
                     else:
                         homebridge_data[reading] = parsed_json[reading]
+                    if reading == 'CO2':
+                        if parsed_json[reading] > self.max_CO2:
+                            print('Old Max CO2:', self.max_CO2)
+                            self.max_CO2 = parsed_json[reading]
+                            print('New Max CO2:', self.max_CO2)
+                            mgr.log_key_states("Enviro Max CO2 Change")
                 elif reading in self.valid_enviro_non_aqi_readings:
                     if self.enviro_config['Capture Temp/Hum/Bar/Lux']:
                         homebridge_data[reading] = parsed_json[reading]
@@ -4197,7 +4286,8 @@ class EnviroClass(object):
             #print(self.name, 'Air Quality Update. Overall AQI:', self.max_aqi, 'Individual AQI:', individual_aqi)
             #print(self.name, 'Domoticz Data:', domoticz_data)
             #print(self.name, 'Homebridge Data:', homebridge_data)
-            homebridge.update_enviro_aqi(self.name, self.enviro_config, self.max_aqi, homebridge_data, individual_aqi, self.PM2_5_alert_level, gas_readings)
+            homebridge.update_enviro_aqi(self.name, self.enviro_config, self.max_aqi, homebridge_data, individual_aqi,
+                                         self.PM2_5_alert_level, gas_readings, self.max_CO2, self.CO2_threshold)
             domoticz.update_enviro_aqi(self.name, self.enviro_config, self.max_aqi, domoticz_data)
 
     def capture_luftdaten_data(self, sensor_id): # Call this if there has been no sensor data for 15 minutes
