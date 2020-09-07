@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.56 - Gen
-# Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
+#Northcliff Home Manager - 8.57 - Gen
+# Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt V0.6.2
 import paho.mqtt.client as mqtt
 import struct
 import time
@@ -3169,12 +3169,24 @@ class AirconClass(object):
         self.log_damper_data = log_damper_data
 
         # Set up Aircon Power Consumption Dictionary
-        self.aircon_power_consumption = {'Heat': 4.97, 'Cool': 5.42, 'Idle': 0.13, 'Off': 0} # Power consumption in kWH for each power_mode
-        self.aircon_weekday_power_rates = {0:{'name': 'off_peak1', 'rate': 0.12584, 'stop_hour': 6}, 7:{'name':'shoulder1', 'rate': 0.19294, 'stop_hour': 13},
-                              14:{'name':'peak', 'rate':0.45936, 'stop_hour': 19}, 20: {'name': 'shoulder2', 'rate': 0.19294, 'stop_hour': 21},
-                              22:{'name': 'off_peak2', 'rate': 0.12584, 'stop_hour': 23}}
-        self.aircon_weekend_power_rates = {0:{'name': 'off_peak1', 'rate': 0.12584, 'stop_hour': 6}, 7:{'name':'shoulder', 'rate': 0.19294, 'stop_hour': 21},
-                              22:{'name': 'off_peak2', 'rate': 0.12584, 'stop_hour': 23}}
+        self.aircon_power_consumption = {'Heat': 4.97, 'Cool': 5.42, 'Idle': 0.13, 'Off': 0} # Power consumption in kWh for each power_mode
+        self.aircon_seasons_months = {'January': 'Summer', 'February': 'Summer', 'March': 'Summer', 'April': 'Spring', 'May': 'Spring', 'June': 'Winter',
+                                      'July': 'Winter', 'August': 'Winter', 'September': 'Spring', 'October': 'Spring', 'November': 'Summer',
+                                      'December': 'Summer'}
+        self.aircon_weekday_power_rates = {'Summer': {0:{'name': 'off_peak1', 'rate': 0.1267, 'stop_hour': 6}, 7:{'name':'shoulder1', 'rate': 0.1647, 'stop_hour': 13},
+                              14:{'name':'peak', 'rate':0.3423, 'stop_hour': 19}, 20: {'name': 'shoulder2', 'rate': 0.1647, 'stop_hour': 21},
+                              22:{'name': 'off_peak2', 'rate': 0.1267, 'stop_hour': 23}},
+                                           'Autumn': {0:{'name': 'off_peak1', 'rate': 0.1267, 'stop_hour': 6}, 7:{'name':'shoulder1', 'rate': 0.1647, 'stop_hour': 13},
+                              14:{'name':'peak', 'rate':0.1647, 'stop_hour': 19}, 20: {'name': 'shoulder2', 'rate': 0.1647, 'stop_hour': 21},
+                              22:{'name': 'off_peak2', 'rate': 0.1267, 'stop_hour': 23}},
+                                           'Winter': {0:{'name': 'off_peak1', 'rate': 0.1267, 'stop_hour': 6}, 7:{'name':'shoulder1', 'rate': 0.1647, 'stop_hour': 16},
+                              17:{'name':'peak', 'rate':0.3423, 'stop_hour': 20}, 21: {'name': 'shoulder2', 'rate': 0.1647, 'stop_hour': 21},
+                              22:{'name': 'off_peak2', 'rate': 0.1267, 'stop_hour': 23}},
+                                           'Spring': {0:{'name': 'off_peak1', 'rate': 0.1267, 'stop_hour': 6}, 7:{'name':'shoulder1', 'rate': 0.1647, 'stop_hour': 13},
+                              14:{'name':'peak', 'rate':0.3423, 'stop_hour': 19}, 20: {'name': 'shoulder2', 'rate': 0.1647, 'stop_hour': 21},
+                              22:{'name': 'off_peak2', 'rate': 0.1267, 'stop_hour': 23}}}
+        self.aircon_weekend_power_rates = {0:{'name': 'off_peak1', 'rate': 0.1267, 'stop_hour': 6}, 7:{'name':'shoulder', 'rate': 0.1647, 'stop_hour': 21},
+                              22:{'name': 'off_peak2', 'rate': 0.1267, 'stop_hour': 23}}
         self.aircon_running_costs = {'total_cost':0, 'total_hours': 0}
         self.log_aircon_cost_data = log_aircon_cost_data
 
@@ -3656,7 +3668,7 @@ class AirconClass(object):
             power_mode = 'Idle'
         #print('aircon_previous_power_rate =', settings['aircon_previous_power_rate'], 'aircon_current_power_rate =', current_power_rate)
         if current_power_rate != settings['aircon_previous_power_rate']: # If the power rate has changed
-            mgr.print_update("Power Rate Changed from $" + str(settings['aircon_previous_power_rate']) + " per kWH to $" + str(current_power_rate) + " per kWH on ")
+            mgr.print_update("Power Rate Changed from $" + str(settings['aircon_previous_power_rate']) + " per kWh to $" + str(current_power_rate) + " per kWh on ")
             self.update_aircon_power_log(power_mode, current_power_rate, time.time(), log_aircon_cost_data)  # Update aircon power log if there's a change of power rate
         if power_mode != settings['aircon_previous_power_mode']: # If the aircon power_mode has changed
             self.update_aircon_power_log(power_mode, current_power_rate, time.time(), log_aircon_cost_data)  # Update aircon power log if there's a change of power_mode
@@ -3665,9 +3677,9 @@ class AirconClass(object):
     def check_power_rate(self, update_date_time):
         update_day = update_date_time.strftime('%A')
         if update_day == 'Saturday' or update_day == 'Sunday':
-            power_rates = self.aircon_weekend_power_rates
+            power_rates = self.aircon_weekend_power_rates # Weekend rates not seasonal
         else:
-            power_rates = self.aircon_weekday_power_rates
+            power_rates = self.aircon_weekday_power_rates[self.aircon_seasons_months[update_date_time.strftime('%B')]] # Weekday rates are seasonal
         update_hour = int(update_date_time.strftime('%H'))
         for time in power_rates:
             if update_hour >= time and update_hour <= power_rates[time]['stop_hour']:
@@ -3675,7 +3687,7 @@ class AirconClass(object):
         return current_aircon_power_rate
      
     def update_aircon_power_log(self, power_mode, current_power_rate, update_time, log_aircon_cost_data):
-        #print('Current Power Rate is $' + current_power_rate + ' per kWH')
+        #print('Current Power Rate is $' + current_power_rate + ' per kWh')
         aircon_current_cost_per_hour = round(current_power_rate * self.aircon_power_consumption[power_mode], 2)
         if self.settings['aircon_previous_power_mode'] == 'Off': # Don't log anything if the previous aircon power_mode was off
             mgr.print_update(self.name + ' started in ' + power_mode + ' mode at a cost of $' + str(aircon_current_cost_per_hour) + ' per hour on ')
@@ -4308,22 +4320,6 @@ class EnviroClass(object):
                         captured_data = {"P2.5": data.values["P2"], "P10": data.values["P1"], "P1": 0}
                         print('Luftdaten Data Captured. PM2.5:', captured_data['P2.5'],'ug/m3, PM10:', captured_data['P10'], 'ug/m3')
                         return "Data Captured", captured_data
-                #except ConnectionRefusedError as e:
-                    #captured_data = {}
-                    #print('Luftdaten Connection Refused Error', e)
-                    #return "Data Not Captured", captured_data
-                #except aiohttp.client_exceptions.ClientConnectorError as e:
-                    #captured_data = {}
-                    #print('Luftdaten Connection Error', e)
-                    #return "Data Not Captured", captured_data
-                #except requests.exceptions.ConnectionError as e:
-                    #captured_data = {}
-                    #print('Luftdaten Connection Error', e)
-                    #return "Data Not Captured", captured_data
-                #except ValueError as e:
-                    #captured_data = {}
-                    #print('Luftdaten Value Error', e)
-                    #return "Data Not Captured", captured_data
             loop = asyncio.get_event_loop()
             message, captured_data = loop.run_until_complete(main())
             if message == "Data Captured":
