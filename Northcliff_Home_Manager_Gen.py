@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.57 - Gen
+#Northcliff Home Manager - 8.60 - Gen
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt V0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -3886,7 +3886,7 @@ class Foobot:
         self.auth_header = {'Accept': 'application/json;charset=UTF-8',
                             'X-API-KEY-TOKEN': apikey}
         self.auth_header_1 = {'X-API-KEY-TOKEN': apikey}
-        self.foobot_url = 'https://api.foobot.io/'
+        self.foobot_url = 'https://api.blueair.io'
         blue_air_authorisation = self.session.get(self.foobot_url, headers=self.auth_header_1)
         blue_air_authorisation_json = blue_air_authorisation.json()
         homehost_request_url = self.foobot_url + '/v2/user/' + self.username + '/homehost/'
