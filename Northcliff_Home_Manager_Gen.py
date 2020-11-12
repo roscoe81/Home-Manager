@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.60 - Gen
-# Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt V0.6.2
+#Northcliff Home Manager - 8.61 - Gen
+# Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
 import time
@@ -130,10 +130,10 @@ class NorthcliffHomeManagerClass(object):
         enviro_capture_time = time.time()
         self.enviro_config = {'Outdoor': {'mqtt Topic': 'Outdoor EM0', 'Capture Temp/Hum/Bar/Lux': True, 'Capture Time': enviro_capture_time, 'Luftdaten Sensor ID': 99999,
                                           'Device IDs': {'P1': 784, 'P2.5': 778, 'P10': 779, 'AQI': 780, 'NH3': 781, 'Oxi': 782, 'Red': 783,
-                                                          'Temp': 840, 'Hum': 840, 'Bar': 840, 'Lux':842}},
+                                                          'Temp': 819, 'Hum': 819, 'Bar': 819, 'Lux':821}},
                               'Indoor': {'mqtt Topic': 'Indoor EM1', 'Capture Temp/Hum/Bar/Lux': True,
                                           'Device IDs': {'P1': 789, 'P2.5': 790, 'P10': 791, 'AQI': 792, 'NH3': 795, 'Oxi': 793, 'Red': 794,
-                                                          'Temp': 839, 'Hum': 839, 'Bar': 839, 'Lux':841, 'CO2': 847, 'VOC': 848}}}
+                                                          'Temp': 824, 'Hum': 824, 'Bar': 824, 'Lux':820, 'CO2': 825, 'VOC': 826}}}
         self.enable_outdoor_enviro_monitor_luftdaten_backup = True # Enable Luftdaten readings if no PM readings from outdoor Enviro Monitor
         self.watchdog_update_time = 0
                                
@@ -3883,43 +3883,77 @@ class Foobot:
         self.username = username
         self.password = password
         self.session = requests.Session()
+        self.blueair_authorised = False
+        self.homehost_found = False
+        self.valid_user = False
+        self.blueair_devices_found = False
         self.auth_header = {'Accept': 'application/json;charset=UTF-8',
                             'X-API-KEY-TOKEN': apikey}
         self.auth_header_1 = {'X-API-KEY-TOKEN': apikey}
         self.foobot_url = 'https://api.blueair.io'
-        blue_air_authorisation = self.session.get(self.foobot_url, headers=self.auth_header_1)
-        blue_air_authorisation_json = blue_air_authorisation.json()
-        homehost_request_url = self.foobot_url + '/v2/user/' + self.username + '/homehost/'
-        home_host = self.session.get(homehost_request_url, headers=self.auth_header_1)
-        self.BASE_URL = 'https://' + home_host.json() + '/v2'
-        token = self.login()
-        if token is None:
-            raise ValueError("Provided username or password is not valid.")
-        self.auth_header['X-AUTH-TOKEN'] = token
+        try:
+            blue_air_authorisation = self.session.get(self.foobot_url, headers=self.auth_header_1)
+            self.blueair_authorised = True
+            print('BlueAir Authorised', blue_air_authorisation.json())
+        except:
+            print('BlueAir Authorisation Failed')
+        if self.blueair_authorised:  
+            blue_air_authorisation_json = blue_air_authorisation.json()
+            homehost_request_url = self.foobot_url + '/v2/user/' + self.username + '/homehost/'
+            try:
+                home_host = self.session.get(homehost_request_url, headers=self.auth_header_1)
+                self.homehost_found = True
+                print('BlueAir Home Host Found', home_host.json())
+            except:
+                print('BlueAir Home Host not Found')
+            if self.homehost_found:
+                self.BASE_URL = 'https://' + home_host.json() + '/v2'
+                token = self.login()
+                if token is None:
+                    print("BlueAir username or password is invalid")
+                else:
+                    self.auth_header['X-AUTH-TOKEN'] = token
 
     def login(self):
         """Log into a foobot device."""
         url = '{base}/user/{user}/login/'.format(base=self.BASE_URL,
                                                  user=self.username)
-        req = self.session.get(url,
+        try:
+            req = self.session.get(url,
                                auth=(self.username, self.password),
                                headers=self.auth_header)
-        return req.headers['X-AUTH-TOKEN'] if req.text == "true" else None
+            if req.text == "true":
+                self.valid_user = True
+                print('BlueAir Logged In', req.json())
+                return req.headers['X-AUTH-TOKEN']
+            else:
+                print('Invalid BlueAir Login')
+                return None
+        except:
+            print('BlueAir Token Capture Failed')
+            return None
 
     def devices(self):
         """Get list of foobot devices owned by logged in user."""
         url = '{base}/owner/{user}/device/'.format(base=self.BASE_URL,
                                                    user=self.username)
-        req = self.session.get(url, headers=self.auth_header)
-
-        def create_device(device):
-            """Helper to create a FoobotDevice based on a dictionary."""
-            return FoobotDevice(auth_header=self.auth_header,
-                                user_id=device['userId'],
-                                uuid=device['uuid'],
-                                name=device['name'],
-                                mac=device['mac'], base_url=self.BASE_URL)
-        return [create_device(device) for device in req.json()]
+        try:
+            req = self.session.get(url, headers=self.auth_header)
+            self.blueair_devices_found = True
+            print('Found BlueAir Devices', req.json())
+        except:
+            print("No BlueAir Devices Found")
+        if self.blueair_devices_found:
+            def create_device(device):
+                """Helper to create a FoobotDevice based on a dictionary."""
+                return FoobotDevice(auth_header=self.auth_header,
+                                    user_id=device['userId'],
+                                    uuid=device['uuid'],
+                                    name=device['name'],
+                                    mac=device['mac'], base_url=self.BASE_URL)
+            return [create_device(device) for device in req.json()]
+        else:
+            return None
 
 class FoobotDevice:
     ## Extracted from https://github.com/philipbl/pyfoobot
@@ -4320,6 +4354,22 @@ class EnviroClass(object):
                         captured_data = {"P2.5": data.values["P2"], "P10": data.values["P1"], "P1": 0}
                         print('Luftdaten Data Captured. PM2.5:', captured_data['P2.5'],'ug/m3, PM10:', captured_data['P10'], 'ug/m3')
                         return "Data Captured", captured_data
+                #except ConnectionRefusedError as e:
+                    #captured_data = {}
+                    #print('Luftdaten Connection Refused Error', e)
+                    #return "Data Not Captured", captured_data
+                #except aiohttp.client_exceptions.ClientConnectorError as e:
+                    #captured_data = {}
+                    #print('Luftdaten Connection Error', e)
+                    #return "Data Not Captured", captured_data
+                #except requests.exceptions.ConnectionError as e:
+                    #captured_data = {}
+                    #print('Luftdaten Connection Error', e)
+                    #return "Data Not Captured", captured_data
+                #except ValueError as e:
+                    #captured_data = {}
+                    #print('Luftdaten Value Error', e)
+                    #return "Data Not Captured", captured_data
             loop = asyncio.get_event_loop()
             message, captured_data = loop.run_until_complete(main())
             if message == "Data Captured":
@@ -4370,9 +4420,15 @@ if __name__ == '__main__': # This is where to overall code kicks off
         # Create a Foobot instance
         key = "<foobot_api_key>"
         fb = Foobot(key, "<foobot_user_name>", "<foobot_user_password>")
-        air_purifier_devices = fb.devices() # Capture foobot device data
-        # Use a dictionary comprehension to create an air purifier instance for each air purifier
-        air_purifier = {name: BlueAirClass(name, air_purifier_devices, mgr.air_purifier_names[name]) for name in mgr.air_purifier_names}
+        if fb.valid_user:
+            air_purifier_devices = fb.devices() # Capture foobot device data
+            if air_purifier_devices != None:
+                # Use a dictionary comprehension to create an air purifier instance for each air purifier
+                air_purifier = {name: BlueAirClass(name, air_purifier_devices, mgr.air_purifier_names[name]) for name in mgr.air_purifier_names}
+            else:
+                mgr.air_purifiers_present = False
+        else:
+            mgr.air_purifiers_present = False
     if mgr.aquarium_monitor_present:
         # Create a Seneye Aquarium Sensor instance
         aquarium_sensor = SeneyeClass("<seneye_user_name>", "<seneye_user_password>")
