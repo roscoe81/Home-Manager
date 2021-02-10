@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 9.5 - Gen Add EV Charger Monitoring
+#Northcliff Home Manager - 9.6 - Gen Add EV Charger Monitoring
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -4604,16 +4604,19 @@ class EVChargerClass(object):
         ev_charger_json = {"port": 1, "confirmed": True}
         valid_button = True
         if button_name == 'Lock Charger':
+            print ("Locking EV Charger")
             self.locked_state = True
             homebridge.update_ev_charger_state(self.state, self.locked_state) # Send update to homebridge
             mgr.log_key_states("EV Charger Lock State Change")
             ev_charger_json["payload_fields"] = {"mode": "Lock Outlet"}
         elif button_name == 'Unlock Charger':
+            print ("Unlocking EV Charger")
             self.locked_state = False
             homebridge.update_ev_charger_state(self.state, self.locked_state) # Send update to homebridge
             mgr.log_key_states("EV Charger Lock State Change")
             ev_charger_json["payload_fields"] = {"mode": "Unlock Outlet"}
         elif button_name == 'Reset Charger':
+            print ("Resetting EV Charger")
             self.locked_state = False
             homebridge.update_ev_charger_state(self.state, self.locked_state) # Send update to homebridge
             mgr.log_key_states("EV Charger Lock State Change")
