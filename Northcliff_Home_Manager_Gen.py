@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 8.61 - Gen
+#Northcliff Home Manager - 9.5 - Gen Add EV Charger Monitoring
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -38,6 +38,7 @@ class NorthcliffHomeManagerClass(object):
         self.aquarium_monitor_present = True # Enables aquarium monitoring
         self.enviro_monitors_present = True  # Enables outdoor air quality monitoring
         self.enable_reboot = True # Enables remote reboot function
+        self.ev_charger_present = True # Enables EV Charger function
         # List the multisensor names
         self.multisensor_names = ['Living', 'Study', 'Kitchen', 'North', 'South', 'Main', 'Rear Balcony', 'North Balcony', 'South Balcony']
         # List the outdoor sensors
@@ -77,6 +78,7 @@ class NorthcliffHomeManagerClass(object):
         self.doorbell_incoming_mqtt_topic = 'DoorbellStatus'
         self.garage_door_incoming_mqtt_topic = 'GarageStatus'
         self.enviro_monitor_incoming_mqtt_topics = ['Outdoor EM0', 'Indoor EM1']
+        self.ev_charger_incoming_mqtt_topic = 'ttn/<Your TTN Application ID>/up/state'
         # Set up the config for each window blind
         self.window_blind_config = {'Living Room Blinds': {'blind host name': '<mylink host name>', 'blind port': 44100, 'light sensor': 'South Balcony',
                                                             'temp sensor': 'North Balcony', 'sunlight threshold 0': 100,'sunlight threshold 1': 1000,
@@ -147,6 +149,7 @@ class NorthcliffHomeManagerClass(object):
         client.subscribe(self.domoticz_incoming_mqtt_topic) # Subscribe to Domoticz for access to its devices
         client.subscribe(self.doorbell_incoming_mqtt_topic) # Subscribe to the Doorbell Monitor
         client.subscribe(self.garage_door_incoming_mqtt_topic) # Subscribe to the Garage Door Controller
+        client.subscribe(self.ev_charger_incoming_mqtt_topic) # Subscribe to the EV Charger Controller
         for enviro_name in self.enviro_config:
             client.subscribe(self.enviro_config[enviro_name]['mqtt Topic']) # Subscribe to the Enviro Monitors
         for aircon_name in self.aircon_config: # Subscribe to the Aircon Controllers
@@ -168,6 +171,9 @@ class NorthcliffHomeManagerClass(object):
             garage_door.capture_status(parsed_json) # Capture garage door status
         elif msg.topic == self.doorbell_incoming_mqtt_topic: # If coming from the Doorbell Monitor
             doorbell.capture_doorbell_status(parsed_json) # Capture doorbell status
+        elif msg.topic == self.ev_charger_incoming_mqtt_topic:
+            print('EV Charger Message', parsed_json)
+            ev_charger.capture_ev_charger_state(parsed_json)
         else: # Test for enviro or aircon messages
             identified_message = False
             for enviro_name in self.enviro_config:
@@ -215,6 +221,9 @@ class NorthcliffHomeManagerClass(object):
             for enviro_name in self.enviro_config:
                 if enviro_name == 'Indoor' and 'CO2' in self.enviro_config[enviro_name]['Device IDs']:
                     key_state_log['Enviro Max CO2'] = enviro_monitor[enviro_name].max_CO2
+        if self.ev_charger_present:
+            key_state_log['EV Charger State'] = ev_charger.state
+            key_state_log['EV Charger Locked State'] = ev_charger.locked_state
         with open(self.key_state_log_file_name, 'w') as f:
             f.write(json.dumps(key_state_log))   
 
@@ -262,7 +271,10 @@ class NorthcliffHomeManagerClass(object):
             for enviro_name in self.enviro_config:
                 if enviro_name == 'Indoor' and 'CO2' in self.enviro_config[enviro_name]['Device IDs']:
                     enviro_monitor[enviro_name].max_CO2 = parsed_key_states['Enviro Max CO2']
-            
+        if self.ev_charger_present and 'EV Charger State' in parsed_key_states:
+            ev_charger.state = parsed_key_states['EV Charger State']
+            ev_charger.locked_state = parsed_key_states['EV Charger Locked State']
+            homebridge.process_ev_charger_acks('Clear ACKs') # Clear ACK indicators
 
     def air_purifier_linking_hour(self):
         today = datetime.now()
@@ -320,6 +332,9 @@ class NorthcliffHomeManagerClass(object):
             if self.garage_door_present:
                 homebridge.update_garage_door('Closing')
                 homebridge.update_garage_door('Closed')
+            # Initialise EV Charger State
+            if self.ev_charger_present:
+                homebridge.update_ev_charger_state(ev_charger.state, ev_charger.locked_state)
             previous_aquarium_capture_time = 0 # Initialise aquarium sensor capture time
             previous_aquarium_reading_time = 0 # Initialise aquarium sensor reading time
             previous_luftdaten_capture_time = 0 # Initialise luftdaten capture time
@@ -525,7 +540,21 @@ class HomebridgeClass(object):
         self.enviro_hum_format = {'name': ' Env Hum', 'service': 'HumiditySensor', 'service_name': ' Env Hum', 'characteristics_properties': {}}
         self.enviro_lux_format = {'name': ' Env Lux', 'service': 'LightSensor', 'service_name': ' Env Lux', 'characteristics_properties': {}}
         self.enviro_CO2_level_format = {'name': ' CO2', 'service_name': ' CO2', 'service' :'CarbonDioxideSensor', 'characteristics_properties': {'CarbonDioxideLevel': {}, 'CarbonDioxidePeakLevel': {}}}
-
+        # Set up EV Charger
+        self.ev_charger_name_identifier = 'Charger'
+        self.ev_charger_state_format = {'name': 'Charger State'}
+        self.ev_charger_not_connected_format = {'service_name': 'Not Connected', 'service': 'Switch', 'characteristics_properties': {}}
+        self.ev_charger_connected_locked_format = {'service_name': 'Connected and Locked', 'service': 'Switch', 'characteristics_properties': {}}
+        self.ev_charger_charging_format = {'service_name': 'Charging', 'service': 'Switch', 'characteristics_properties': {}}
+        self.ev_charger_charged_format = {'service_name': 'Charged', 'service': 'Switch', 'characteristics_properties': {}}
+        self.ev_charger_control_format = {'name': 'Charger Control'}
+        self.ev_charger_unlock_format = {'service_name': 'Unlock Charger', 'service': 'Switch', 'characteristics_properties': {}}
+        self.ev_charger_lock_format = {'service_name': 'Lock Charger', 'service': 'Switch', 'characteristics_properties': {}}
+        self.ev_charger_reset_format = {'name': 'Reset Charger', 'service_name': 'Reset Charger', 'service': 'Switch', 'characteristics_properties': {}}
+        self.ev_charger_ack_format = {'name': 'Charger ACK'}
+        self.ev_charger_unlock_ack_format = {'service_name': 'Unlock', 'service': 'Switch', 'characteristics_properties': {}}
+        self.ev_charger_lock_ack_format = {'service_name': 'Lock', 'service': 'Switch', 'characteristics_properties': {}}
+        self.ev_charger_reset_ack_format = {'name': 'Reset', 'service_name': 'Reset Charger', 'service': 'Switch', 'characteristics_properties': {}}
         # Set up config
         self.current_config = {}
         self.ack_cache = {}
@@ -535,7 +564,7 @@ class HomebridgeClass(object):
         homebridge_restart_required = False
         time.sleep(5)
         client.publish(self.outgoing_config_mqtt_topic, json.dumps(self.all_configs_props)) # Request config check
-        time.sleep(1)
+        time.sleep(2)
         current_homebridge_config = self.current_config
         #current_homebridge_config['Dummy Accessory'] = {'Dummy Service Name': {'DummyService':{'DummyCharacteristic':{'DummyProperty':0}}}}
         required_homebridge_config = self.indentify_required_homebridge_config()
@@ -813,10 +842,46 @@ class HomebridgeClass(object):
                                                                                       {self.enviro_CO2_level_format['service']: self.enviro_CO2_level_format['characteristics_properties']}}                
         else:
             enviro_monitors_homebridge_config = {}        
+        # EV Charger
+        if mgr.ev_charger_present:
+            ev_charger_homebridge_config = {}
+            ev_charger_homebridge_config[self.ev_charger_state_format['name']] = {self.ev_charger_not_connected_format['service_name']:
+                                                                                    {self.ev_charger_not_connected_format['service']:
+                                                                                     self.ev_charger_not_connected_format['characteristics_properties']},
+                                                                                    self.ev_charger_connected_locked_format['service_name']:
+                                                                                    {self.ev_charger_connected_locked_format['service']:
+                                                                                     self.ev_charger_connected_locked_format['characteristics_properties']},
+                                                                                    self.ev_charger_charging_format['service_name']:
+                                                                                    {self.ev_charger_charging_format['service']:
+                                                                                     self.ev_charger_charging_format['characteristics_properties']},
+                                                                                    self.ev_charger_charged_format['service_name']:
+                                                                                    {self.ev_charger_charged_format['service']:
+                                                                                     self.ev_charger_charged_format['characteristics_properties']}}
+            ev_charger_homebridge_config[self.ev_charger_control_format['name']] = {self.ev_charger_unlock_format['service_name']:
+                                                                               {self.ev_charger_unlock_format['service']:
+                                                                                self.ev_charger_unlock_format['characteristics_properties']},
+                                                                               self.ev_charger_lock_format['service_name']:
+                                                                               {self.ev_charger_lock_format['service']:
+                                                                                self.ev_charger_lock_format['characteristics_properties']}}
+            ev_charger_homebridge_config[self.ev_charger_reset_format['name']] = {self.ev_charger_reset_format['service_name']:
+                                                                                    {self.ev_charger_reset_format['service']:
+                                                                                     self.ev_charger_reset_format['characteristics_properties']}}
+            ev_charger_homebridge_config[self.ev_charger_ack_format['name']] = {self.ev_charger_unlock_ack_format['service_name']:
+                                                                                    {self.ev_charger_unlock_ack_format['service']:
+                                                                                     self.ev_charger_unlock_ack_format['characteristics_properties']},
+                                                                                self.ev_charger_lock_ack_format['service_name']:
+                                                                                    {self.ev_charger_lock_ack_format['service']:
+                                                                                     self.ev_charger_lock_ack_format['characteristics_properties']},
+                                                                                self.ev_charger_reset_ack_format['service_name']:
+                                                                                    {self.ev_charger_reset_ack_format['service']:
+                                                                                     self.ev_charger_reset_ack_format['characteristics_properties']}}
+        else:
+            ev_charger_homebridge_config = {}
+            
         # Build entire required_homebridge_config
         required_homebridge_config = {**blinds_homebridge_config, **door_sensors_homebridge_config, **garage_door_homebridge_config, **reboot_homebridge_config, **light_dimmers_homebridge_config,
                                       **aircon_homebridge_config, **doorbell_homebridge_config, **air_purifiers_homebridge_config, **multisensors_homebridge_config, **powerpoints_homebridge_config,
-                                      **flood_sensors_homebridge_config, **enviro_monitors_homebridge_config}
+                                      **flood_sensors_homebridge_config, **enviro_monitors_homebridge_config, **ev_charger_homebridge_config}
         return required_homebridge_config
                     
     def find_incorrect_accessories(self, required_homebridge_config, current_homebridge_config):
@@ -998,6 +1063,7 @@ class HomebridgeClass(object):
             client.publish(self.outgoing_remove_accessory_mqtt_topic, json.dumps(homebridge_json))
         
     def capture_homebridge_buttons(self, parsed_json):
+        #print('Homebridge Button', parsed_json)
         if self.dimmer_format['name'] in parsed_json['name']: # If it's a light dimmer button
             self.adjust_light_dimmer(parsed_json)
         elif self.blinds_format['name'] in parsed_json['name']: # If it's a blind button
@@ -1012,6 +1078,9 @@ class HomebridgeClass(object):
             self.process_air_purifier_button(parsed_json)
         elif parsed_json['name'] == self.reboot_format['name']: # If it's a reboot button.
             self.process_reboot_button(parsed_json)
+        elif self.ev_charger_name_identifier in parsed_json['name']: # If it's a EV charger button.
+            #print("Charger Button", parsed_json)
+            self.process_ev_charger_button(parsed_json)
         else: # Test for aircon buttons and process if true
             identified_button = False
             for aircon_name in self.aircon_names:
@@ -1023,6 +1092,7 @@ class HomebridgeClass(object):
                 
     def config_response(self, parsed_json):
         if "ack" in parsed_json:
+            print("Ack Found")
             self.handle_acks(parsed_json)
         else:
             self.capture_config(parsed_json)
@@ -1052,9 +1122,12 @@ class HomebridgeClass(object):
                 print(ack, 'command unsuccessful')           
         
     def capture_config(self, parsed_json):
-        print('Homebridge Config')
+        #print("Capture Config", parsed_json)
         del parsed_json['request_id'] # Delete the Request ID
-        current_config = {accessory: {service_name: {parsed_json[accessory]['services'][service_name]: parsed_json[accessory]['properties'][service_name]} for service_name in parsed_json[accessory]['services']} for accessory in parsed_json}
+        current_config = {accessory: {service_name: {parsed_json[accessory]['services'][service_name]:
+                                                     parsed_json[accessory]['properties'][service_name]}
+                                      for service_name in parsed_json[accessory]['services']} for accessory in parsed_json}
+        #print("Current Config", current_config)
         self.current_config = current_config
 
     def adjust_light_dimmer(self, parsed_json):
@@ -1143,7 +1216,49 @@ class HomebridgeClass(object):
             pass
         else:
             print('Unrecognised Doorbell Button Type')
-            pass    
+            pass
+        
+    def process_ev_charger_button(self, parsed_json):
+        homebridge_json = {}
+        #print('Homebridge: Process EV Charger Button', parsed_json)
+        # Ignore the button press if it's only an indicator and reset to its pre-pressed state
+        if parsed_json['name'] == 'Charger State':
+            #print('Charger State')
+            time.sleep(1)
+            homebridge_json['name'] = parsed_json['name']
+            homebridge_json['characteristic'] = 'On'
+            homebridge_json['service_name'] = parsed_json['service_name']
+            homebridge_json['value'] = ev_charger.state[parsed_json['service_name']]
+            #print(self.outgoing_mqtt_topic, homebridge_json)
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))       
+        # Send the Reset Charger button message to the EV Charger and return the button to its pre-pressed state
+        elif parsed_json['name'] == 'Reset Charger':
+            #print('Reset Charger')
+            ev_charger.process_ev_button(parsed_json['service_name'])
+            time.sleep(2)
+            homebridge_json['name'] = parsed_json['name']
+            homebridge_json['service_name'] = parsed_json['service_name']
+            homebridge_json['characteristic'] = parsed_json['characteristic']
+            homebridge_json['value'] = False # Prepare to return switch state to off
+            # Publish homebridge payload with pre-pressed switch state
+            #print(homebridge_json)
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        elif parsed_json['name'] == 'Charger Control':
+            #print('Lock/Unlock Charger')
+            ev_charger.process_ev_button(parsed_json['service_name'])
+        elif parsed_json['name'] == 'Charger ACK': #Indicator Only
+            new_state = parsed_json['value']
+            #print('Charger ACK')
+            time.sleep(1)
+            homebridge_json['name'] = parsed_json['name']
+            homebridge_json['characteristic'] = 'On'
+            homebridge_json['service_name'] = parsed_json['service_name']
+            homebridge_json['value'] = not new_state
+            #print(self.outgoing_mqtt_topic, homebridge_json)
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))     
+        else:
+            print('Unrecognised EV Charger Button Type')
+            pass
 
     def process_garage_door_button(self, parsed_json):
         #print('Homebridge: Process Garage Door Button', parsed_json)
@@ -1931,8 +2046,81 @@ class HomebridgeClass(object):
             if light_level < 0.0001:
                 light_level = 0.0001 #HomeKit minValue is set to 0.0001 Lux
             homebridge_json['value'] = light_level
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))        
-                                                        
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            
+    def update_ev_charger_state(self, state, locked_state):
+        homebridge_json = {}
+        homebridge_json['name'] = self.ev_charger_state_format['name']
+        homebridge_json['characteristic'] = 'On'
+        for item in state:
+            homebridge_json['service_name'] = item # Match homebridge service name with status item
+            homebridge_json['value'] = state[item]
+            # Publish homebridge payload with updated EV Charger state
+            #print('Update EV Status', homebridge_json)
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        if not state["Charging"]: # Clear "Reset Charger ACK" once charging has been completed
+            homebridge_json['name'] = self.ev_charger_ack_format['name']
+            homebridge_json['service_name'] = 'Reset'
+            homebridge_json['value'] = False
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))          
+        homebridge_json['name'] = self.ev_charger_control_format['name'] # Set Locked Button State
+        homebridge_json['service_name'] = self.ev_charger_lock_format['service_name']
+        if locked_state == True:
+            homebridge_json['value'] = True
+        else:
+            homebridge_json['value'] = False
+        #print(json.dumps(homebridge_json))
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['service_name'] = self.ev_charger_unlock_format['service_name'] # Set Unlocked Button State
+        if locked_state == True:
+            homebridge_json['value'] = False
+        else:
+            homebridge_json['value'] = True
+        #print(json.dumps(homebridge_json))
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        
+    def process_ev_charger_acks(self, parsed_json):
+        homebridge_json = {}
+        homebridge_json['name'] = self.ev_charger_ack_format['name']
+        homebridge_json['characteristic'] = 'On'
+        if parsed_json == 'Lock Outlet ACK':
+            homebridge_json['service_name'] = 'Lock'
+            homebridge_json['value'] = True
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['value'] = False
+            homebridge_json['service_name'] = 'Unlock'
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['service_name'] = 'Reset'
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        elif parsed_json == 'Unlock Outlet ACK':
+            homebridge_json['service_name'] = 'Unlock'
+            homebridge_json['value'] = True
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['value'] = False
+            homebridge_json['service_name'] = 'Lock'
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['service_name'] = 'Reset'
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        elif parsed_json == 'Reset Charger ACK':
+            homebridge_json['service_name'] = 'Reset'
+            homebridge_json['value'] = True
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['value'] = False
+            homebridge_json['service_name'] = 'Lock'
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['service_name'] = 'Unlock'
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        elif parsed_json == 'Clear ACKs':
+            homebridge_json['service_name'] = 'Reset'
+            homebridge_json['value'] = False
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['service_name'] = 'Lock'
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['service_name'] = 'Unlock'
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        else:
+            pass
+        
 class DomoticzClass(object): # Manages communications to and from the z-wave objects
     def __init__(self):
         self.outgoing_mqtt_topic = 'domoticz/in'
@@ -3062,9 +3250,12 @@ class WindowBlindClass(object):
         homebridge.update_blind_position_state(self.blind, blind_id, command)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             blind_json = self.window_blind_config['blind commands'][command + ' ' + blind_id]
-            s.connect((self.blind_ip_address, self.blind_port))
-            s.sendall(blind_json)
-            data = s.recv(1024)
+            try:
+                s.connect((self.blind_ip_address, self.blind_port))
+                s.sendall(blind_json)
+                data = s.recv(1024)
+            except TimeoutError:
+                print ('Window Blind Connection Failed', self.blind_ip_address, self.blind_port)             
 
     def close_door_impacting_blind(self, blind_id): # This method closes any blind that covers a door and opens it if a door is opened during that blind closure
         self.move_blind(blind_id, 'down')
@@ -3173,20 +3364,18 @@ class AirconClass(object):
         self.aircon_seasons_months = {'January': 'Summer', 'February': 'Summer', 'March': 'Summer', 'April': 'Spring', 'May': 'Spring', 'June': 'Winter',
                                       'July': 'Winter', 'August': 'Winter', 'September': 'Spring', 'October': 'Spring', 'November': 'Summer',
                                       'December': 'Summer'}
-        self.aircon_weekday_power_rates = {'Summer': {0:{'name': 'off_peak1', 'rate': 0.1267, 'stop_hour': 6}, 7:{'name':'shoulder1', 'rate': 0.1647, 'stop_hour': 13},
-                              14:{'name':'peak', 'rate':0.3423, 'stop_hour': 19}, 20: {'name': 'shoulder2', 'rate': 0.1647, 'stop_hour': 21},
-                              22:{'name': 'off_peak2', 'rate': 0.1267, 'stop_hour': 23}},
-                                           'Autumn': {0:{'name': 'off_peak1', 'rate': 0.1267, 'stop_hour': 6}, 7:{'name':'shoulder1', 'rate': 0.1647, 'stop_hour': 13},
-                              14:{'name':'peak', 'rate':0.1647, 'stop_hour': 19}, 20: {'name': 'shoulder2', 'rate': 0.1647, 'stop_hour': 21},
-                              22:{'name': 'off_peak2', 'rate': 0.1267, 'stop_hour': 23}},
-                                           'Winter': {0:{'name': 'off_peak1', 'rate': 0.1267, 'stop_hour': 6}, 7:{'name':'shoulder1', 'rate': 0.1647, 'stop_hour': 16},
-                              17:{'name':'peak', 'rate':0.3423, 'stop_hour': 20}, 21: {'name': 'shoulder2', 'rate': 0.1647, 'stop_hour': 21},
-                              22:{'name': 'off_peak2', 'rate': 0.1267, 'stop_hour': 23}},
-                                           'Spring': {0:{'name': 'off_peak1', 'rate': 0.1267, 'stop_hour': 6}, 7:{'name':'shoulder1', 'rate': 0.1647, 'stop_hour': 13},
-                              14:{'name':'peak', 'rate':0.3423, 'stop_hour': 19}, 20: {'name': 'shoulder2', 'rate': 0.1647, 'stop_hour': 21},
-                              22:{'name': 'off_peak2', 'rate': 0.1267, 'stop_hour': 23}}}
-        self.aircon_weekend_power_rates = {0:{'name': 'off_peak1', 'rate': 0.1267, 'stop_hour': 6}, 7:{'name':'shoulder', 'rate': 0.1647, 'stop_hour': 21},
-                              22:{'name': 'off_peak2', 'rate': 0.1267, 'stop_hour': 23}}
+        self.aircon_weekday_power_rates = {'Summer': {0:{'name': 'EV', 'rate': 0.10104, 'stop_hour': 3}, 4:{'name': 'off_peak1', 'rate': 0.1641, 'stop_hour': 6},
+                                                      7:{'name':'shoulder1', 'rate': 0.2017, 'stop_hour': 13}, 14:{'name':'peak', 'rate':0.3797, 'stop_hour': 19},
+                                                      20: {'name': 'shoulder2', 'rate': 0.2021, 'stop_hour': 21}, 22:{'name': 'off_peak2', 'rate': 0.1641, 'stop_hour': 23}},
+                                           'Autumn': {0:{'name': 'EV', 'rate': 0.10104, 'stop_hour': 3}, 4:{'name': 'off_peak1', 'rate': 0.1641, 'stop_hour': 6},
+                                                      7:{'name':'shoulder', 'rate': 0.2017, 'stop_hour': 21}, 22:{'name': 'off_peak2', 'rate': 0.1641, 'stop_hour': 23}},
+                                           'Winter': {0:{'name': 'EV', 'rate': 0.10104, 'stop_hour': 3}, 4:{'name': 'off_peak1', 'rate': 0.1641, 'stop_hour': 6},
+                                                      7:{'name':'shoulder1', 'rate': 0.2017, 'stop_hour': 16}, 17:{'name':'peak', 'rate':0.3797, 'stop_hour': 20},
+                                                      21: {'name': 'shoulder2', 'rate': 0.2021, 'stop_hour': 21}, 22:{'name': 'off_peak2', 'rate': 0.1641, 'stop_hour': 23}},
+                                           'Spring': {0:{'name': 'EV', 'rate': 0.10104, 'stop_hour': 3}, 4:{'name': 'off_peak1', 'rate': 0.1641, 'stop_hour': 6},
+                                                      7:{'name':'shoulder', 'rate': 0.2021, 'stop_hour': 21}, 22:{'name': 'off_peak2', 'rate': 0.1641, 'stop_hour': 23}}}
+        self.aircon_weekend_power_rates = {0:{'name': 'off_peak1', 'rate': 0.1641, 'stop_hour': 6}, 7:{'name':'shoulder', 'rate': 0.2021, 'stop_hour': 21},
+                              22:{'name': 'off_peak2', 'rate': 0.1641, 'stop_hour': 23}}
         self.aircon_running_costs = {'total_cost':0, 'total_hours': 0}
         self.log_aircon_cost_data = log_aircon_cost_data
 
@@ -4377,14 +4566,72 @@ class EnviroClass(object):
         except:
             print('Luftdaten Error, No Outdoor Enviro Data Available')
             
+class EVChargerClass(object):
+    def __init__(self):
+        #print ('Instantiated EV Charger', self)
+        self.outgoing_mqtt_topic = 'ttn/<Your TTN Application ID>/down'
+        # Set up EV Charger status dictionary with initial states set
+        self.state = {'Not Connected': False, 'Connected and Locked': False, 'Charging': False,
+                        'Charged': False}
+        self.locked_state = False
+        
+    def capture_ev_charger_state(self, parsed_json):
+        # Sync HomeManager's charger status and homebridge EV charger button settings with the EV charger
+        # monitor status when an mqtt status update message is received from the EV charger monitor 
+        if "ACK" in parsed_json:
+            print("Received", parsed_json)
+            homebridge.process_ev_charger_acks(parsed_json)           
+        else: # Process State Update
+            mgr.print_update('EV Charger State Update on ')
+            #print(parsed_json)
+            for state_item in self.state:# Check which state has been received
+                if state_item == parsed_json: # Found which received state
+                    if self.state[state_item]: # If it's already set to True
+                        state_changed = False # Flag that it hasn't changed
+                    else:
+                        state_changed = True # Flag that it's changed so that it can be logged as a key_state change
+                        new_state = state_item
+                        self.state[state_item] = True # Set received item state to True
+                else:
+                    self.state[state_item] = False # Set other states to False
+            if state_changed:
+                mgr.print_update('EV Charger State Changed to ' + new_state + ' on ')
+                mgr.log_key_states("EV Charger State Change") # Log state change
+            homebridge.update_ev_charger_state(self.state, self.locked_state) # Send update to homebridge
+        
+    def process_ev_button(self, button_name):
+        #print("Button Name", button_name)
+        ev_charger_json = {"port": 1, "confirmed": True}
+        valid_button = True
+        if button_name == 'Lock Charger':
+            self.locked_state = True
+            homebridge.update_ev_charger_state(self.state, self.locked_state) # Send update to homebridge
+            mgr.log_key_states("EV Charger Lock State Change")
+            ev_charger_json["payload_fields"] = {"mode": "Lock Outlet"}
+        elif button_name == 'Unlock Charger':
+            self.locked_state = False
+            homebridge.update_ev_charger_state(self.state, self.locked_state) # Send update to homebridge
+            mgr.log_key_states("EV Charger Lock State Change")
+            ev_charger_json["payload_fields"] = {"mode": "Unlock Outlet"}
+        elif button_name == 'Reset Charger':
+            self.locked_state = False
+            homebridge.update_ev_charger_state(self.state, self.locked_state) # Send update to homebridge
+            mgr.log_key_states("EV Charger Lock State Change")
+            ev_charger_json["payload_fields"] = {"mode": "Reset Charger"}
+        else:
+            valid_button = False
+        if valid_button:
+            # Send button message to the EV Controller
+            client.publish(self.outgoing_mqtt_topic, json.dumps(ev_charger_json))
+            
 if __name__ == '__main__': # This is where to overall code kicks off
     # Create a Home Manager instance
     mgr = NorthcliffHomeManagerClass(log_aircon_cost_data = True, log_aircon_damper_data = False, log_aircon_temp_data = False,
                                      load_previous_aircon_effectiveness = True, perform_homebridge_config_check = False)
     # Create a Homebridge instance
     homebridge = HomebridgeClass(mgr.outdoor_multisensor_names, mgr.outdoor_sensors_homebridge_name, mgr.aircon_config, mgr.auto_air_purifier_names,
-                                 mgr.window_blind_config, mgr.door_sensor_names_locations, mgr.light_dimmer_names_device_id, mgr.colour_light_dimmer_names, mgr.air_purifier_names,
-                                 mgr.multisensor_names, mgr.powerpoint_names_device_id, mgr.flood_sensor_names, mgr.enviro_config)
+                                 mgr.window_blind_config, mgr.door_sensor_names_locations, mgr.light_dimmer_names_device_id, mgr.colour_light_dimmer_names,
+                                 mgr.air_purifier_names, mgr.multisensor_names, mgr.powerpoint_names_device_id, mgr.flood_sensor_names, mgr.enviro_config)
     # Create a Domoticz instance
     domoticz = DomoticzClass()
     if mgr.doorbell_present:
@@ -4435,6 +4682,9 @@ if __name__ == '__main__': # This is where to overall code kicks off
     if mgr.enviro_monitors_present:
         # Create Enviro Monitor instance for each Enviro Name
         enviro_monitor = {name: EnviroClass(name, mgr.enviro_config[name]) for name in mgr.enviro_config}
+    if mgr.ev_charger_present:
+        # Create EV Charger instance
+        ev_charger = EVChargerClass()
     # Create and set up an mqtt instance                             
     client = mqtt.Client("<mqtt client name>")
     client.on_connect = mgr.on_connect
