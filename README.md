@@ -1,15 +1,15 @@
 # Home Manager
-This is a Raspberry Pi based Home Automation Manager. It utilises mosquitto, Homebridge, Homebridge-mqtt, Domoticz, the Apple HomeKit app and the projects contained in my other GitHub repositories to automate a Mitsubishi ducted air conditioner, a Fermax Door Intercom, z-wave lighting/power outlets/flood sensors/door sensors, Somfy window blinds, a garage door opener, BlueAir air purifiers, a Seneye aquarium sensor and environment monitors.
+This is a Raspberry Pi based Home Automation Manager. It utilises mosquitto, Homebridge, Homebridge-mqtt, Domoticz, the Apple HomeKit app and the projects contained in my other GitHub repositories to automate a Mitsubishi ducted air conditioner, a Fermax Door Intercom, z-wave lighting/power outlets/flood sensors/door sensors, Somfy window blinds, a garage door opener, BlueAir air purifiers, a Seneye aquarium sensor, environment monitors and an EV charger.
 
 ## System Overview
-![System Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20System%20Overview.png)
+![System Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20System%20Overview.png).
 
-The [System Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20System%20Overview.pdf) shows the four Raspberry Pi based controllers that comprise the system, the mqtt messages that allow them to communicate with each other and the end devices that they manage.
+The [System Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20System%20Overview.pdf) shows the four Raspberry Pi based controllers that comprise the system, the mqtt messages that allow them to communicate with each other and the end devices that they manage.  This system overview does not include the EV charger functionality. That can be found [here](https://github.com/roscoe81/ev-charger-monitor/blob/main/Documentation/Northcliff%20EV%20Charger%20Monitor%20Overview.png).
 
 ## Home Manager Functional Overview
-![Functional Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20OOP%20Functional%20Overview.png)
+![Functional Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20OOP%20Functional%20Overview.png).
 
-The [Functional Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20OOP%20Functional%20Overview.pdf) outlines the Python objects of the Home Manager controller and how they interact with Domoticz, Homebridge and the three other controllers that comprise the overall system.
+The [Functional Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20OOP%20Functional%20Overview.pdf) outlines the Python objects of the Home Manager controller and how they interact with Domoticz, Homebridge and the three other controllers that comprise the overall system.  This functional overview does not yet include the EV charger functionality.
 
 ## Aircon Controller
 This is a [controller](https://github.com/roscoe81/Aircon-Controller) for a Mitsubishi air conditioner (Model FDC508HES3) to provide mqtt control of the airconditioner using the serial communications link that runs between Mitsubishi's RCD-H-E remote control unit and the CNB port on the air conditioner's control board. Also provides the ability to control a damper so that airflow can be directed to the correct air conditioning zone. An inclinometer is provided for the damper in order to detect its position and control the air flow between zones with greater precision. This Home Manager code captures the actual temperatures of each room, compares those temperatures to desired temperature levels and controls the air conditioner and damper to align the desired and actual temperatures. Room temperatures can be set and monitored by the Apple Home App on an iOS device or via Domoticz. Logs are captured allow the aircon's performance to be monitored, analysed and adjusted. Examples of such analysis is shown below.
@@ -80,6 +80,9 @@ The Home Manager monitors a Seneye Aquarium Sensor to monitor ph, NH3 and Temper
 
 ## Environment Monitor Readings
 The [Environment Monitor](https://github.com/roscoe81/enviro-monitor) captures, displays and reports on air particles and gases. Its readings are received via mqtt messages and are recorded/displayed in Domoticz and sent to Homebridge.
+
+## EV Charger Monitor
+The Home Manager can monitor and control an EV charger by interworking with an [EV Charger Monitor](https://github.com/roscoe81/ev-charger-monitor).
 
 ## License
 This project is licensed under the MIT License - see the LICENSE.md file for details
