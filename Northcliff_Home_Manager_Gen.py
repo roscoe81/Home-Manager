@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 9.6 - Gen Add EV Charger Monitoring
+#Northcliff Home Manager - 9.7 - Gen
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -554,7 +554,7 @@ class HomebridgeClass(object):
         self.ev_charger_ack_format = {'name': 'Charger ACK'}
         self.ev_charger_unlock_ack_format = {'service_name': 'Unlock', 'service': 'Switch', 'characteristics_properties': {}}
         self.ev_charger_lock_ack_format = {'service_name': 'Lock', 'service': 'Switch', 'characteristics_properties': {}}
-        self.ev_charger_reset_ack_format = {'name': 'Reset', 'service_name': 'Reset Charger', 'service': 'Switch', 'characteristics_properties': {}}
+        self.ev_charger_reset_ack_format = {'service_name': 'Reset', 'service': 'Switch', 'characteristics_properties': {}}
         # Set up config
         self.current_config = {}
         self.ack_cache = {}
@@ -565,11 +565,9 @@ class HomebridgeClass(object):
         time.sleep(5)
         client.publish(self.outgoing_config_mqtt_topic, json.dumps(self.all_configs_props)) # Request config check
         time.sleep(2)
-        current_homebridge_config = self.current_config
-        #current_homebridge_config['Dummy Accessory'] = {'Dummy Service Name': {'DummyService':{'DummyCharacteristic':{'DummyProperty':0}}}}
         required_homebridge_config = self.indentify_required_homebridge_config()
-        missing_accessories, missing_accessories_services, additional_accessories_services, incorrect_accessories_services = self.find_incorrect_accessories(required_homebridge_config, current_homebridge_config)
-        excess_accessories = self.find_excess_accessories(required_homebridge_config, current_homebridge_config)
+        missing_accessories, missing_accessories_services, additional_accessories_services, incorrect_accessories_services = self.find_incorrect_accessories(required_homebridge_config, self.current_config)
+        excess_accessories = self.find_excess_accessories(required_homebridge_config, self.current_config)
         print('Missing Accessories:', missing_accessories)
         print('Excess Accessories:', excess_accessories)
         print('Missing Services within Accessories:', missing_accessories_services)
