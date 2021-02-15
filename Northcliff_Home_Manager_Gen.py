@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 9.7 - Gen
+#Northcliff Home Manager - 9.13 Gen
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -172,7 +172,7 @@ class NorthcliffHomeManagerClass(object):
         elif msg.topic == self.doorbell_incoming_mqtt_topic: # If coming from the Doorbell Monitor
             doorbell.capture_doorbell_status(parsed_json) # Capture doorbell status
         elif msg.topic == self.ev_charger_incoming_mqtt_topic:
-            print('EV Charger Message', parsed_json)
+            #print('EV Charger Message', parsed_json)
             ev_charger.capture_ev_charger_state(parsed_json)
         else: # Test for enviro or aircon messages
             identified_message = False
@@ -221,9 +221,11 @@ class NorthcliffHomeManagerClass(object):
             for enviro_name in self.enviro_config:
                 if enviro_name == 'Indoor' and 'CO2' in self.enviro_config[enviro_name]['Device IDs']:
                     key_state_log['Enviro Max CO2'] = enviro_monitor[enviro_name].max_CO2
+                    #print('Wrote Enviro Max CO2 to Log', reason, enviro_name, enviro_monitor[enviro_name].max_CO2)
         if self.ev_charger_present:
             key_state_log['EV Charger State'] = ev_charger.state
-            key_state_log['EV Charger Locked State'] = ev_charger.locked_state
+            key_state_log['EV Charger Command State'] = ev_charger.command_state
+            key_state_log['EV Charger Locked State'] = ev_charger.locked_state # Only use for versions prior to 9.9
         with open(self.key_state_log_file_name, 'w') as f:
             f.write(json.dumps(key_state_log))   
 
@@ -249,10 +251,6 @@ class NorthcliffHomeManagerClass(object):
                 homebridge.update_blind_target_temps(blind, parsed_key_states['Blind High Temp'][blind], parsed_key_states['Blind Low Temp'][blind])
                 window_blind[blind].auto_override = parsed_key_states['Blind Auto Override'][blind]
                 homebridge.set_auto_blind_override_button(blind, parsed_key_states['Blind Auto Override'][blind])
-        if self.powerpoints_present and 'Powerpoint State' in parsed_key_states:
-            for name in parsed_key_states['Powerpoint State']:
-                powerpoint[name].on_off(parsed_key_states['Powerpoint State'][name])
-                homebridge.update_powerpoint_state(name, parsed_key_states['Powerpoint State'][name])
         if self.aircons_present and 'Aircon Thermostat Status' in parsed_key_states:
             for aircon_name in self.aircon_config:
                 for thermostat in parsed_key_states['Aircon Thermostat Status'][aircon_name]:
@@ -271,10 +269,15 @@ class NorthcliffHomeManagerClass(object):
             for enviro_name in self.enviro_config:
                 if enviro_name == 'Indoor' and 'CO2' in self.enviro_config[enviro_name]['Device IDs']:
                     enviro_monitor[enviro_name].max_CO2 = parsed_key_states['Enviro Max CO2']
+                    #print('Retrieved Enviro Max CO2 from Log', parsed_key_states['Reason'], enviro_name, enviro_monitor[enviro_name].max_CO2)
         if self.ev_charger_present and 'EV Charger State' in parsed_key_states:
             ev_charger.state = parsed_key_states['EV Charger State']
-            ev_charger.locked_state = parsed_key_states['EV Charger Locked State']
-            homebridge.process_ev_charger_acks('Clear ACKs') # Clear ACK indicators
+            if 'EV Charger Command State' in parsed_key_states: # Only load ev_charger.command_state if it's in the log (backwards compatibility)
+                ev_charger.command_state = parsed_key_states['EV Charger Command State']
+        if self.powerpoints_present and 'Powerpoint State' in parsed_key_states:
+            for name in parsed_key_states['Powerpoint State']:
+                powerpoint[name].on_off(parsed_key_states['Powerpoint State'][name])
+                homebridge.update_powerpoint_state(name, parsed_key_states['Powerpoint State'][name])
 
     def air_purifier_linking_hour(self):
         today = datetime.now()
@@ -301,7 +304,7 @@ class NorthcliffHomeManagerClass(object):
     def run(self): # The main Home Manager start-up, loop and shut-down code                          
         try:
             if self.perform_homebridge_config_check:
-                homebridge.check_and_fix_config() 
+                homebridge.check_and_fix_config()
             # Retrieve logged key states
             self.retrieve_key_states()
             if self.enable_reboot:
@@ -332,9 +335,10 @@ class NorthcliffHomeManagerClass(object):
             if self.garage_door_present:
                 homebridge.update_garage_door('Closing')
                 homebridge.update_garage_door('Closed')
-            # Initialise EV Charger State
+            # Initialise EV Charger States
             if self.ev_charger_present:
-                homebridge.update_ev_charger_state(ev_charger.state, ev_charger.locked_state)
+                homebridge.update_ev_charger_state(ev_charger.state)
+                homebridge.update_ev_charger_command_state(ev_charger.command_state)
             previous_aquarium_capture_time = 0 # Initialise aquarium sensor capture time
             previous_aquarium_reading_time = 0 # Initialise aquarium sensor reading time
             previous_luftdaten_capture_time = 0 # Initialise luftdaten capture time
@@ -388,11 +392,11 @@ class NorthcliffHomeManagerClass(object):
                                             self.update_manual_air_purifier_fan_speeds(name, fan_speed)
                 if self.aquarium_monitor_present:
                     if time.time() - previous_aquarium_capture_time > 600: # Capture aquarium reading every 10 minutes
-                        print('Aquarium Capture Time:', datetime.fromtimestamp(time.time()).strftime('%A %d %B %Y @ %H:%M:%S'))
+                        #print('Aquarium Capture Time:', datetime.fromtimestamp(time.time()).strftime('%A %d %B %Y @ %H:%M:%S'))
                         valid_aquarium_reading, message, ph, temp, nh3, reading_time =  aquarium_sensor.latest() # Capture Seneye device readings
                         if message == 'Seneye Comms Good': #If there were no Seneye comms errors
                             if reading_time > previous_aquarium_reading_time: # Only update Domoticz if there is a new reading
-                                print('Aquarium Reading Time:', datetime.fromtimestamp(reading_time).strftime('%A %d %B %Y @ %H:%M:%S'), 'ph:', ph, 'nh3:', nh3, 'Temp:', temp)
+                                #print('Aquarium Reading Time:', datetime.fromtimestamp(reading_time).strftime('%A %d %B %Y @ %H:%M:%S'), 'ph:', ph, 'nh3:', nh3, 'Temp:', temp)
                                 if valid_aquarium_reading:
                                     domoticz.update_aquarium(ph, temp, nh3)
                                 previous_aquarium_reading_time = reading_time
@@ -541,20 +545,17 @@ class HomebridgeClass(object):
         self.enviro_lux_format = {'name': ' Env Lux', 'service': 'LightSensor', 'service_name': ' Env Lux', 'characteristics_properties': {}}
         self.enviro_CO2_level_format = {'name': ' CO2', 'service_name': ' CO2', 'service' :'CarbonDioxideSensor', 'characteristics_properties': {'CarbonDioxideLevel': {}, 'CarbonDioxidePeakLevel': {}}}
         # Set up EV Charger
-        self.ev_charger_name_identifier = 'Charger'
-        self.ev_charger_state_format = {'name': 'Charger State'}
-        self.ev_charger_not_connected_format = {'service_name': 'Not Connected', 'service': 'Switch', 'characteristics_properties': {}}
-        self.ev_charger_connected_locked_format = {'service_name': 'Connected and Locked', 'service': 'Switch', 'characteristics_properties': {}}
-        self.ev_charger_charging_format = {'service_name': 'Charging', 'service': 'Switch', 'characteristics_properties': {}}
-        self.ev_charger_charged_format = {'service_name': 'Charged', 'service': 'Switch', 'characteristics_properties': {}}
-        self.ev_charger_control_format = {'name': 'Charger Control'}
-        self.ev_charger_unlock_format = {'service_name': 'Unlock Charger', 'service': 'Switch', 'characteristics_properties': {}}
-        self.ev_charger_lock_format = {'service_name': 'Lock Charger', 'service': 'Switch', 'characteristics_properties': {}}
-        self.ev_charger_reset_format = {'name': 'Reset Charger', 'service_name': 'Reset Charger', 'service': 'Switch', 'characteristics_properties': {}}
-        self.ev_charger_ack_format = {'name': 'Charger ACK'}
-        self.ev_charger_unlock_ack_format = {'service_name': 'Unlock', 'service': 'Switch', 'characteristics_properties': {}}
-        self.ev_charger_lock_ack_format = {'service_name': 'Lock', 'service': 'Switch', 'characteristics_properties': {}}
-        self.ev_charger_reset_ack_format = {'service_name': 'Reset', 'service': 'Switch', 'characteristics_properties': {}}
+        self.ev_charger_name_identifier = 'EV Charger'
+        self.ev_charger_state_format = {'name': 'EV Charger State'}
+        self.ev_charger_not_connected_format = {'service_name': 'Not Connected', 'service': 'MotionSensor', 'characteristics_properties': {}}
+        self.ev_charger_connected_locked_format = {'service_name': 'Connected and Locked', 'service': 'MotionSensor', 'characteristics_properties': {}}
+        self.ev_charger_charging_format = {'service_name': 'Charging', 'service': 'MotionSensor', 'characteristics_properties': {}}
+        self.ev_charger_charged_format = {'service_name': 'Charged', 'service': 'MotionSensor', 'characteristics_properties': {}}
+        self.ev_charger_disabled_format = {'service_name': 'Disabled', 'service': 'MotionSensor', 'characteristics_properties': {}}
+        self.ev_charger_control_format = {'name': 'EV Charger Control'}
+        self.ev_charger_enable_charger_format = {'service_name': 'Enable Charger', 'service': 'Door', 'characteristics_properties': {'CurrentPosition':{'minValue': 0, 'maxValue': 100, 'minStep': 100}, "TargetPosition": {"minValue": 0,"maxValue": 100,"minStep": 100}}}
+        self.ev_charger_disable_charger_format = {'service_name': 'Disable Charger', 'service': 'Door', 'characteristics_properties': {'CurrentPosition':{'minValue': 0, 'maxValue': 100, 'minStep': 100}, "TargetPosition": {"minValue": 0,"maxValue": 100,"minStep": 100}}}
+        self.ev_charger_start_charging_format = {'service_name': 'Start Charging', 'service': 'Door', 'characteristics_properties': {'CurrentPosition':{'minValue': 0, 'maxValue': 100, 'minStep': 100}, "TargetPosition": {"minValue": 0,"maxValue": 100,"minStep": 100}}}
         # Set up config
         self.current_config = {}
         self.ack_cache = {}
@@ -565,6 +566,8 @@ class HomebridgeClass(object):
         time.sleep(5)
         client.publish(self.outgoing_config_mqtt_topic, json.dumps(self.all_configs_props)) # Request config check
         time.sleep(2)
+        #current_homebridge_config = self.current_config
+        #current_homebridge_config['Dummy Accessory'] = {'Dummy Service Name': {'DummyService':{'DummyCharacteristic':{'DummyProperty':0}}}}
         required_homebridge_config = self.indentify_required_homebridge_config()
         missing_accessories, missing_accessories_services, additional_accessories_services, incorrect_accessories_services = self.find_incorrect_accessories(required_homebridge_config, self.current_config)
         excess_accessories = self.find_excess_accessories(required_homebridge_config, self.current_config)
@@ -840,7 +843,7 @@ class HomebridgeClass(object):
                                                                                       {self.enviro_CO2_level_format['service']: self.enviro_CO2_level_format['characteristics_properties']}}                
         else:
             enviro_monitors_homebridge_config = {}        
-        # EV Charger
+        # EV Charger      
         if mgr.ev_charger_present:
             ev_charger_homebridge_config = {}
             ev_charger_homebridge_config[self.ev_charger_state_format['name']] = {self.ev_charger_not_connected_format['service_name']:
@@ -854,25 +857,19 @@ class HomebridgeClass(object):
                                                                                      self.ev_charger_charging_format['characteristics_properties']},
                                                                                     self.ev_charger_charged_format['service_name']:
                                                                                     {self.ev_charger_charged_format['service']:
-                                                                                     self.ev_charger_charged_format['characteristics_properties']}}
-            ev_charger_homebridge_config[self.ev_charger_control_format['name']] = {self.ev_charger_unlock_format['service_name']:
-                                                                               {self.ev_charger_unlock_format['service']:
-                                                                                self.ev_charger_unlock_format['characteristics_properties']},
-                                                                               self.ev_charger_lock_format['service_name']:
-                                                                               {self.ev_charger_lock_format['service']:
-                                                                                self.ev_charger_lock_format['characteristics_properties']}}
-            ev_charger_homebridge_config[self.ev_charger_reset_format['name']] = {self.ev_charger_reset_format['service_name']:
-                                                                                    {self.ev_charger_reset_format['service']:
-                                                                                     self.ev_charger_reset_format['characteristics_properties']}}
-            ev_charger_homebridge_config[self.ev_charger_ack_format['name']] = {self.ev_charger_unlock_ack_format['service_name']:
-                                                                                    {self.ev_charger_unlock_ack_format['service']:
-                                                                                     self.ev_charger_unlock_ack_format['characteristics_properties']},
-                                                                                self.ev_charger_lock_ack_format['service_name']:
-                                                                                    {self.ev_charger_lock_ack_format['service']:
-                                                                                     self.ev_charger_lock_ack_format['characteristics_properties']},
-                                                                                self.ev_charger_reset_ack_format['service_name']:
-                                                                                    {self.ev_charger_reset_ack_format['service']:
-                                                                                     self.ev_charger_reset_ack_format['characteristics_properties']}}
+                                                                                     self.ev_charger_charged_format['characteristics_properties']},
+                                                                                    self.ev_charger_disabled_format['service_name']:
+                                                                                    {self.ev_charger_disabled_format['service']:
+                                                                                     self.ev_charger_disabled_format['characteristics_properties']}}
+            ev_charger_homebridge_config[self.ev_charger_control_format['name']] = {self.ev_charger_enable_charger_format['service_name']:
+                                                                               {self.ev_charger_enable_charger_format['service']:
+                                                                                self.ev_charger_enable_charger_format['characteristics_properties']},
+                                                                                    self.ev_charger_disable_charger_format['service_name']:
+                                                                               {self.ev_charger_disable_charger_format['service']:
+                                                                                self.ev_charger_disable_charger_format['characteristics_properties']},
+                                                                                    self.ev_charger_start_charging_format['service_name']:
+                                                                               {self.ev_charger_start_charging_format['service']:
+                                                                                self.ev_charger_start_charging_format['characteristics_properties']}}
         else:
             ev_charger_homebridge_config = {}
             
@@ -1076,7 +1073,7 @@ class HomebridgeClass(object):
             self.process_air_purifier_button(parsed_json)
         elif parsed_json['name'] == self.reboot_format['name']: # If it's a reboot button.
             self.process_reboot_button(parsed_json)
-        elif self.ev_charger_name_identifier in parsed_json['name']: # If it's a EV charger button.
+        elif parsed_json['name'] == self.ev_charger_control_format['name']: # If it's an EV charger control button.
             #print("Charger Button", parsed_json)
             self.process_ev_charger_button(parsed_json)
         else: # Test for aircon buttons and process if true
@@ -1096,7 +1093,7 @@ class HomebridgeClass(object):
             self.capture_config(parsed_json)
         
     def handle_acks(self, parsed_json):
-        print('Homebridge Ack Received', parsed_json)
+        #print('Homebridge Ack Received', parsed_json)
         command_found = False
         for ack in self.ack_cache:
             if self.ack_cache[ack] == parsed_json:
@@ -1120,12 +1117,12 @@ class HomebridgeClass(object):
                 print(ack, 'command unsuccessful')           
         
     def capture_config(self, parsed_json):
-        #print("Capture Config", parsed_json)
+        print("Capture Config", parsed_json)
         del parsed_json['request_id'] # Delete the Request ID
-        current_config = {accessory: {service_name: {parsed_json[accessory]['services'][service_name]:
-                                                     parsed_json[accessory]['properties'][service_name]}
-                                      for service_name in parsed_json[accessory]['services']} for accessory in parsed_json}
-        #print("Current Config", current_config)
+        self.current_config = {accessory: {service_name: {parsed_json[accessory]['services'][service_name]:
+                                                          parsed_json[accessory]['properties'][service_name]}
+                                           for service_name in parsed_json[accessory]['services']} for accessory in parsed_json}
+        print("Current Config", current_config)
         self.current_config = current_config
 
     def adjust_light_dimmer(self, parsed_json):
@@ -1217,45 +1214,29 @@ class HomebridgeClass(object):
             pass
         
     def process_ev_charger_button(self, parsed_json):
-        homebridge_json = {}
-        #print('Homebridge: Process EV Charger Button', parsed_json)
-        # Ignore the button press if it's only an indicator and reset to its pre-pressed state
-        if parsed_json['name'] == 'Charger State':
-            #print('Charger State')
-            time.sleep(1)
-            homebridge_json['name'] = parsed_json['name']
-            homebridge_json['characteristic'] = 'On'
-            homebridge_json['service_name'] = parsed_json['service_name']
-            homebridge_json['value'] = ev_charger.state[parsed_json['service_name']]
-            #print(self.outgoing_mqtt_topic, homebridge_json)
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))       
-        # Send the Reset Charger button message to the EV Charger and return the button to its pre-pressed state
-        elif parsed_json['name'] == 'Reset Charger':
-            #print('Reset Charger')
-            ev_charger.process_ev_button(parsed_json['service_name'])
-            time.sleep(2)
-            homebridge_json['name'] = parsed_json['name']
-            homebridge_json['service_name'] = parsed_json['service_name']
-            homebridge_json['characteristic'] = parsed_json['characteristic']
-            homebridge_json['value'] = False # Prepare to return switch state to off
-            # Publish homebridge payload with pre-pressed switch state
-            #print(homebridge_json)
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        elif parsed_json['name'] == 'Charger Control':
-            #print('Lock/Unlock Charger')
-            ev_charger.process_ev_button(parsed_json['service_name'])
-        elif parsed_json['name'] == 'Charger ACK': #Indicator Only
-            new_state = parsed_json['value']
-            #print('Charger ACK')
-            time.sleep(1)
-            homebridge_json['name'] = parsed_json['name']
-            homebridge_json['characteristic'] = 'On'
-            homebridge_json['service_name'] = parsed_json['service_name']
-            homebridge_json['value'] = not new_state
-            #print(self.outgoing_mqtt_topic, homebridge_json)
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))     
+        if parsed_json['service_name'] == 'Start Charging':
+            if parsed_json['characteristic'] == 'TargetPosition' and parsed_json['value'] == 100:
+                print('Start Charging Button Pressed')
+                ev_charger.process_ev_button(parsed_json['service_name'])
+            elif parsed_json['characteristic'] == 'TargetPosition' and parsed_json['value'] == 0:
+                print('Turned off Start Charging. Ignore and turn back on')
+                self.update_ev_charger_command_state(ev_charger.command_state)
+        elif parsed_json['service_name'] == 'Disable Charger':
+            if parsed_json['characteristic'] == 'TargetPosition' and parsed_json['value'] == 100:
+                print('Disable Charger Button Pressed')
+                ev_charger.process_ev_button(parsed_json['service_name'])
+            elif parsed_json['characteristic'] == 'TargetPosition' and parsed_json['value'] == 0:
+                print('Turned off Disable Charger. Ignore and turn back on')
+                self.update_ev_charger_command_state(ev_charger.command_state)
+        elif parsed_json['service_name'] == 'Enable Charger':
+            if parsed_json['characteristic'] == 'TargetPosition' and parsed_json['value'] == 100:
+                print('Enable Charger Button Pressed')
+                ev_charger.process_ev_button(parsed_json['service_name'])
+            elif parsed_json['characteristic'] == 'TargetPosition' and parsed_json['value'] == 0:
+                print('Turned off Enable Charger. Ignore and turn back on')
+                self.update_ev_charger_command_state(ev_charger.command_state)
         else:
-            print('Unrecognised EV Charger Button Type')
+            print('Unrecognised EV Charger Button Pressed', parsed_json)
             pass
 
     def process_garage_door_button(self, parsed_json):
@@ -2046,78 +2027,29 @@ class HomebridgeClass(object):
             homebridge_json['value'] = light_level
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
             
-    def update_ev_charger_state(self, state, locked_state):
+    def update_ev_charger_state(self, state):
         homebridge_json = {}
         homebridge_json['name'] = self.ev_charger_state_format['name']
-        homebridge_json['characteristic'] = 'On'
+        homebridge_json['characteristic'] = 'MotionDetected'
         for item in state:
             homebridge_json['service_name'] = item # Match homebridge service name with status item
             homebridge_json['value'] = state[item]
-            # Publish homebridge payload with updated EV Charger state
-            #print('Update EV Status', homebridge_json)
+            #print("Publishing Homebridge EV Charger State", homebridge_json)
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        if not state["Charging"]: # Clear "Reset Charger ACK" once charging has been completed
-            homebridge_json['name'] = self.ev_charger_ack_format['name']
-            homebridge_json['service_name'] = 'Reset'
-            homebridge_json['value'] = False
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))          
-        homebridge_json['name'] = self.ev_charger_control_format['name'] # Set Locked Button State
-        homebridge_json['service_name'] = self.ev_charger_lock_format['service_name']
-        if locked_state == True:
-            homebridge_json['value'] = True
-        else:
-            homebridge_json['value'] = False
-        #print(json.dumps(homebridge_json))
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        homebridge_json['service_name'] = self.ev_charger_unlock_format['service_name'] # Set Unlocked Button State
-        if locked_state == True:
-            homebridge_json['value'] = False
-        else:
-            homebridge_json['value'] = True
-        #print(json.dumps(homebridge_json))
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        
-    def process_ev_charger_acks(self, parsed_json):
+            
+    def update_ev_charger_command_state(self, command_state):
         homebridge_json = {}
-        homebridge_json['name'] = self.ev_charger_ack_format['name']
-        homebridge_json['characteristic'] = 'On'
-        if parsed_json == 'Lock Outlet ACK':
-            homebridge_json['service_name'] = 'Lock'
-            homebridge_json['value'] = True
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-            homebridge_json['value'] = False
-            homebridge_json['service_name'] = 'Unlock'
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-            homebridge_json['service_name'] = 'Reset'
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        elif parsed_json == 'Unlock Outlet ACK':
-            homebridge_json['service_name'] = 'Unlock'
-            homebridge_json['value'] = True
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-            homebridge_json['value'] = False
-            homebridge_json['service_name'] = 'Lock'
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-            homebridge_json['service_name'] = 'Reset'
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        elif parsed_json == 'Reset Charger ACK':
-            homebridge_json['service_name'] = 'Reset'
-            homebridge_json['value'] = True
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-            homebridge_json['value'] = False
-            homebridge_json['service_name'] = 'Lock'
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-            homebridge_json['service_name'] = 'Unlock'
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        elif parsed_json == 'Clear ACKs':
-            homebridge_json['service_name'] = 'Reset'
-            homebridge_json['value'] = False
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-            homebridge_json['service_name'] = 'Lock'
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-            homebridge_json['service_name'] = 'Unlock'
-            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        else:
-            pass
+        homebridge_json['name'] = self.ev_charger_control_format['name']
+        for state in command_state:
+            homebridge_json['service_name'] = state
+            homebridge_json['characteristic'] = 'TargetPosition'
+            homebridge_json['value'] = command_state[state]['Requested']
+            #print("Publishing Homebridge EV Charger Command State", homebridge_json)
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Update requested command
+            homebridge_json['characteristic'] = 'CurrentPosition'
+            homebridge_json['value'] = command_state[state]['ACK']
+            #print("Publishing Homebridge EV Charger Command State", homebridge_json)
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) # Update ACKed command    
         
 class DomoticzClass(object): # Manages communications to and from the z-wave objects
     def __init__(self):
@@ -2342,7 +2274,7 @@ class DomoticzClass(object): # Manages communications to and from the z-wave obj
 
     def update_aquarium(self, ph, temp, nh3):
         domoticz_json = {}
-        print('Updating Domoticz Aquarium')
+        #print('Updating Domoticz Aquarium')
         domoticz_json['idx'] = 769
         domoticz_json['nvalue'] = 0
         domoticz_json['svalue'] = ph
@@ -4256,8 +4188,8 @@ class BlueAirClass(object):
                 for setting in self.previous_air_purifier_settings:
                     if self.previous_air_purifier_settings[setting] != self.current_air_purifier_settings[setting]:
                         self.settings_changed = True
-                        mgr.print_update(self.name + ' Air Purifier ' + setting + ' setting changed from ' + self.previous_air_purifier_settings[setting] + ' to ' +
-                                         self.current_air_purifier_settings[setting] + ' on ')
+                        #mgr.print_update(self.name + ' Air Purifier ' + setting + ' setting changed from ' + self.previous_air_purifier_settings[setting] + ' to ' +
+                                         #self.current_air_purifier_settings[setting] + ' on ')
                         self.previous_air_purifier_settings[setting] = self.current_air_purifier_settings[setting]
             else:
                 mgr.print_update('Air Purifier Settings Data Format Error for ' + self.name + ' on ')
@@ -4570,17 +4502,25 @@ class EVChargerClass(object):
         self.outgoing_mqtt_topic = 'ttn/<Your TTN Application ID>/down'
         # Set up EV Charger status dictionary with initial states set
         self.state = {'Not Connected': False, 'Connected and Locked': False, 'Charging': False,
-                        'Charged': False}
-        self.locked_state = False
+                        'Charged': False, 'Disabled':False}
+        self.command_state = {'Enable Charger': {'Requested': 0, 'ACK': 0}, 'Disable Charger': {'Requested': 0, 'ACK': 0},
+                              'Start Charging': {'Requested': 0, 'ACK': 0}}
+        self.command_ack_map = {'Enable Charger': 'Unlock Outlet ACK', 'Start Charging': 'Reset Charger ACK', 'Disable Charger': 'Lock Outlet ACK'}
+        self.locked_state = False # Only for key_state_log backwards compatibility (prior to Version 9.9)
         
     def capture_ev_charger_state(self, parsed_json):
-        # Sync HomeManager's charger status and homebridge EV charger button settings with the EV charger
-        # monitor status when an mqtt status update message is received from the EV charger monitor 
-        if "ACK" in parsed_json:
-            print("Received", parsed_json)
-            homebridge.process_ev_charger_acks(parsed_json)           
+        if "ACK" in parsed_json: # Update command_state if it's an ACK message
+            #print("Received ACK Message", parsed_json)
+            for command_item in self.command_state:# Check which ACK has been received
+                if parsed_json == self.command_ack_map[command_item]:
+                    self.command_state[command_item]['ACK'] = 100
+                else:
+                    self.command_state[command_item]['ACK'] = 0 # Other commands are reset when the latest command is ACKed
+                    self.command_state[command_item]['Requested'] = 0
+            mgr.log_key_states("EV Charger ACK Update") # Log ACK Update
+            homebridge.update_ev_charger_command_state(self.command_state)           
         else: # Process State Update
-            mgr.print_update('EV Charger State Update on ')
+            #mgr.print_update('EV Charger State Update on ')
             #print(parsed_json)
             for state_item in self.state:# Check which state has been received
                 if state_item == parsed_json: # Found which received state
@@ -4593,36 +4533,62 @@ class EVChargerClass(object):
                 else:
                     self.state[state_item] = False # Set other states to False
             if state_changed:
+                if new_state == "Disabled": # Reset all non-disabled command states when going into disabled state
+                    self.command_state = {'Enable Charger': {'Requested':0, 'ACK': 0}, 'Disable Charger': {'Requested':100, 'ACK': 100},
+                              'Start Charging': {'Requested':0, 'ACK': 0}}
+                    self.locked_state = True # Only for key_state_log backwards compatibility (prior to Version 9.9)
+                else: # Reset all non-enable command states when entering non-disable charger states
+                    self.command_state = {'Enable Charger': {'Requested':100, 'ACK': 100}, 'Disable Charger': {'Requested':0, 'ACK': 0},
+                              'Start Charging': {'Requested':0, 'ACK': 0}}
+                    self.locked_state = False # Only for key_state_log backwards compatibility (prior to Version 9.9)
                 mgr.print_update('EV Charger State Changed to ' + new_state + ' on ')
-                mgr.log_key_states("EV Charger State Change") # Log state change
-            homebridge.update_ev_charger_state(self.state, self.locked_state) # Send update to homebridge
+                mgr.log_key_states('EV Charger State Change') # Log state change
+                homebridge.update_ev_charger_command_state(self.command_state) 
+                homebridge.update_ev_charger_state(self.state) # Send update to homebridge
         
     def process_ev_button(self, button_name):
         #print("Button Name", button_name)
         ev_charger_json = {"port": 1, "confirmed": True}
         valid_button = True
-        if button_name == 'Lock Charger':
-            print ("Locking EV Charger")
-            self.locked_state = True
-            homebridge.update_ev_charger_state(self.state, self.locked_state) # Send update to homebridge
-            mgr.log_key_states("EV Charger Lock State Change")
-            ev_charger_json["payload_fields"] = {"mode": "Lock Outlet"}
-        elif button_name == 'Unlock Charger':
-            print ("Unlocking EV Charger")
-            self.locked_state = False
-            homebridge.update_ev_charger_state(self.state, self.locked_state) # Send update to homebridge
-            mgr.log_key_states("EV Charger Lock State Change")
+        if button_name == 'Disable Charger':
+            if self.state['Charging'] or self.state['Charged']: # Only process button if the charger is charging or charged
+                print ("Disabling EV Charger")
+                self.command_state['Disable Charger']['Requested'] = 100
+                self.command_state['Enable Charger']['Requested'] = 0
+                self.command_state['Start Charging']['Requested'] = 0
+                mgr.log_key_states("EV Charger Command State Change") # Log state change
+                homebridge.update_ev_charger_command_state(self.command_state)
+                ev_charger_json["payload_fields"] = {"mode": "Lock Outlet"}
+            else:
+               print("Trying to disable charger when not in 'Charging' or 'Charged' state. Button ignored")
+               #print(self.command_state)
+               homebridge.update_ev_charger_command_state(self.command_state)
+               valid_button = False
+        elif button_name == 'Enable Charger':
+            print ("Enabling EV Charger")
+            self.command_state['Disable Charger']['Requested'] = 0
+            self.command_state['Enable Charger']['Requested'] = 100
+            self.command_state['Start Charging']['Requested'] = 0
+            mgr.log_key_states("EV Charger Command State Change") # Log state change
+            homebridge.update_ev_charger_command_state(self.command_state)
             ev_charger_json["payload_fields"] = {"mode": "Unlock Outlet"}
-        elif button_name == 'Reset Charger':
-            print ("Resetting EV Charger")
-            self.locked_state = False
-            homebridge.update_ev_charger_state(self.state, self.locked_state) # Send update to homebridge
-            mgr.log_key_states("EV Charger Lock State Change")
-            ev_charger_json["payload_fields"] = {"mode": "Reset Charger"}
+        elif button_name == 'Start Charging':
+            if self.state['Connected and Locked']: # Only process button if ready to charge
+                print ("Starting EV Charging")
+                self.command_state['Start Charging']['Requested'] = 100
+                mgr.log_key_states("EV Charger Command State Change") # Log state change
+                homebridge.update_ev_charger_command_state(self.command_state)
+                ev_charger_json["payload_fields"] = {"mode": "Reset Charger"}
+            else:
+                print("Trying to start charging when not in 'Connected and Locked' state. Button ignored")
+                #print(self.command_state)
+                homebridge.update_ev_charger_command_state(self.command_state)
+                valid_button = False
         else:
             valid_button = False
         if valid_button:
             # Send button message to the EV Controller
+            print("Sending EV Command", ev_charger_json)
             client.publish(self.outgoing_mqtt_topic, json.dumps(ev_charger_json))
             
 if __name__ == '__main__': # This is where to overall code kicks off
