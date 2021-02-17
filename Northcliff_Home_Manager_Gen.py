@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 9.13 Gen
+#Northcliff Home Manager - 9.14 Gen
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -4565,13 +4565,19 @@ class EVChargerClass(object):
                homebridge.update_ev_charger_command_state(self.command_state)
                valid_button = False
         elif button_name == 'Enable Charger':
-            print ("Enabling EV Charger")
-            self.command_state['Disable Charger']['Requested'] = 0
-            self.command_state['Enable Charger']['Requested'] = 100
-            self.command_state['Start Charging']['Requested'] = 0
-            mgr.log_key_states("EV Charger Command State Change") # Log state change
-            homebridge.update_ev_charger_command_state(self.command_state)
-            ev_charger_json["payload_fields"] = {"mode": "Unlock Outlet"}
+            if self.state['Disabled']: # Only process button if charger is already disabled
+                print ("Enabling EV Charger")
+                self.command_state['Disable Charger']['Requested'] = 0
+                self.command_state['Enable Charger']['Requested'] = 100
+                self.command_state['Start Charging']['Requested'] = 0
+                mgr.log_key_states("EV Charger Command State Change") # Log state change
+                homebridge.update_ev_charger_command_state(self.command_state)
+                ev_charger_json["payload_fields"] = {"mode": "Unlock Outlet"}
+            else:
+                print("Trying to enable charger when not in 'Disabled' state. Button ignored")
+                #print(self.command_state)
+                homebridge.update_ev_charger_command_state(self.command_state)
+                valid_button = False
         elif button_name == 'Start Charging':
             if self.state['Connected and Locked']: # Only process button if ready to charge
                 print ("Starting EV Charging")
