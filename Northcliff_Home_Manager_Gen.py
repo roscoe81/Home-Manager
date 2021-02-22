@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 9.14 Gen
+#Northcliff Home Manager - 9.15 Gen
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -4537,7 +4537,11 @@ class EVChargerClass(object):
                     self.command_state = {'Enable Charger': {'Requested':0, 'ACK': 0}, 'Disable Charger': {'Requested':100, 'ACK': 100},
                               'Start Charging': {'Requested':0, 'ACK': 0}}
                     self.locked_state = True # Only for key_state_log backwards compatibility (prior to Version 9.9)
-                else: # Reset all non-enable command states when entering non-disable charger states
+                elif new_state == "Charging": # Set 'Start Charging' command state and reset other command states when going into charging state
+                    self.command_state = {'Enable Charger': {'Requested':0, 'ACK': 0}, 'Disable Charger': {'Requested':0, 'ACK': 0},
+                              'Start Charging': {'Requested':100, 'ACK': 100}}
+                    self.locked_state = False # Only for key_state_log backwards compatibility (prior to Version 9.9)
+                else: # Reset all non-enable command states when entering non-disable and non-charging charger states
                     self.command_state = {'Enable Charger': {'Requested':100, 'ACK': 100}, 'Disable Charger': {'Requested':0, 'ACK': 0},
                               'Start Charging': {'Requested':0, 'ACK': 0}}
                     self.locked_state = False # Only for key_state_log backwards compatibility (prior to Version 9.9)
