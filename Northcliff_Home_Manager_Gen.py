@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 9.15 Gen
+#Northcliff Home Manager - 9.17 - Gen Add Enviro Noise
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -130,12 +130,12 @@ class NorthcliffHomeManagerClass(object):
         self.universal_air_purifier_fan_speed = 1
         self.air_purifier_linking_times = {'Start': 9, 'Stop': 20}
         enviro_capture_time = time.time()
-        self.enviro_config = {'Outdoor': {'mqtt Topic': 'Outdoor EM0', 'Capture Temp/Hum/Bar/Lux': True, 'Capture Time': enviro_capture_time, 'Luftdaten Sensor ID': 99999,
+        self.enviro_config = {'Outdoor': {'mqtt Topic': 'Outdoor EM0', 'Capture Non AQI': True, 'Capture Time': enviro_capture_time, 'Luftdaten Sensor ID': 99999,
                                           'Device IDs': {'P1': 784, 'P2.5': 778, 'P10': 779, 'AQI': 780, 'NH3': 781, 'Oxi': 782, 'Red': 783,
-                                                          'Temp': 819, 'Hum': 819, 'Bar': 819, 'Lux':821}},
-                              'Indoor': {'mqtt Topic': 'Indoor EM1', 'Capture Temp/Hum/Bar/Lux': True,
+                                                          'Temp': 819, 'Hum': 819, 'Bar': 819, 'Lux':821, 'Noise': 838}},
+                              'Indoor': {'mqtt Topic': 'Indoor EM1', 'Capture Non AQI': True,
                                           'Device IDs': {'P1': 789, 'P2.5': 790, 'P10': 791, 'AQI': 792, 'NH3': 795, 'Oxi': 793, 'Red': 794,
-                                                          'Temp': 824, 'Hum': 824, 'Bar': 824, 'Lux':820, 'CO2': 825, 'VOC': 826}}}
+                                                          'Temp': 824, 'Hum': 824, 'Bar': 824, 'Lux':820, 'CO2': 825, 'VOC': 826, 'Noise': 837}}}
         self.enable_outdoor_enviro_monitor_luftdaten_backup = True # Enable Luftdaten readings if no PM readings from outdoor Enviro Monitor
         self.watchdog_update_time = 0
                                
@@ -828,7 +828,7 @@ class HomebridgeClass(object):
                                                                                                                self.enviro_PM2_5_alert_format['service_name']:
                                                                                                                {self.enviro_PM2_5_alert_format['service']:
                                                                                                                 self.enviro_PM2_5_alert_format['characteristics_properties']}}
-                if self.enviro_config[enviro_monitor]['Capture Temp/Hum/Bar/Lux']: # Set up Temp/Hum/Bar/Lux if enabled
+                if self.enviro_config[enviro_monitor]['Capture Non AQI']: # Set up Non AQI if enabled
                     enviro_monitors_homebridge_config[enviro_monitor + self.enviro_temp_format['name']] = {enviro_monitor + self.enviro_temp_format['service_name']:
                                                                                                            {self.enviro_temp_format['service']:
                                                                                                             self.enviro_temp_format['characteristics_properties']}}
@@ -2007,7 +2007,7 @@ class HomebridgeClass(object):
         else:
             homebridge_json['value'] = False
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
-        if enviro_config['Capture Temp/Hum/Bar/Lux']: # If there are Temp/Hum/Bar/Lux Readings
+        if enviro_config['Capture Non AQI']: # If there are Non AQI Readings
             homebridge_json['name'] = name + self.enviro_temp_format['name']
             homebridge_json['service_name'] = name + self.enviro_temp_format['service_name']
             homebridge_json['characteristic'] = 'CurrentTemperature'
@@ -4371,7 +4371,7 @@ class EnviroClass(object):
         self.name = name
         self.valid_enviro_aqi_readings = ['P1', 'P2.5', 'P10', 'Red', 'Oxi', 'NH3', 'CO2', 'VOC']
         self.valid_enviro_aqi_readings_no_gas = ['P1', 'P2.5', 'P10', 'CO2', 'VOC']
-        self.valid_enviro_non_aqi_readings = ['Temp', 'Hum', 'Bar', 'Lux']
+        self.valid_enviro_non_aqi_readings = ['Temp', 'Hum', 'Bar', 'Lux', 'Noise']
         self.valid_luftdaten_readings = ['P2.5', 'P10']
         self.air_reading_bands = {'P1':[0, 6, 17, 27, 35], 'P2.5':[0, 11, 35, 53, 70], 'P10': [0, 16, 50, 75, 100],
                                   'NH3': [0, 6, 2, 10, 15], 'Red': [0, 6, 10, 50, 75], 'Oxi': [0, 0.2, 0.4, 0.8, 1],
@@ -4443,8 +4443,9 @@ class EnviroClass(object):
                             print('New Max CO2:', self.max_CO2)
                             mgr.log_key_states("Enviro Max CO2 Change")
                 elif reading in self.valid_enviro_non_aqi_readings:
-                    if self.enviro_config['Capture Temp/Hum/Bar/Lux']:
-                        homebridge_data[reading] = parsed_json[reading]
+                    if self.enviro_config['Capture Non AQI']:
+                        if reading != 'Noise': # Don't capture noise readings in homebridge
+                            homebridge_data[reading] = parsed_json[reading]
                         domoticz_data[reading] = parsed_json[reading]
                 else:
                     pass # Ignore other readings  
@@ -4541,7 +4542,7 @@ class EVChargerClass(object):
                     self.command_state = {'Enable Charger': {'Requested':0, 'ACK': 0}, 'Disable Charger': {'Requested':0, 'ACK': 0},
                               'Start Charging': {'Requested':100, 'ACK': 100}}
                     self.locked_state = False # Only for key_state_log backwards compatibility (prior to Version 9.9)
-                else: # Reset all non-enable command states when entering non-disable and non-charging charger states
+                else: # Reset all non-enable command states when entering non-disabled and non-charging charger states
                     self.command_state = {'Enable Charger': {'Requested':100, 'ACK': 100}, 'Disable Charger': {'Requested':0, 'ACK': 0},
                               'Start Charging': {'Requested':0, 'ACK': 0}}
                     self.locked_state = False # Only for key_state_log backwards compatibility (prior to Version 9.9)
