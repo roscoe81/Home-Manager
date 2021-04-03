@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 9.17 - Gen Add Enviro Noise
+#Northcliff Home Manager - 9.18 - Gen Fix Air Purifier Active State Value
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -1887,10 +1887,13 @@ class HomebridgeClass(object):
         homebridge_json['characteristic'] = 'CurrentAirPurifierState'
         if mode == 'auto' or fan_speed != '0':
             homebridge_json['value'] = 2
+            active_state = 1
         else:
             homebridge_json['value'] = 0
+            active_state = 0
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         homebridge_json['characteristic'] = 'Active'
+        homebridge_json['value'] = active_state
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         homebridge_json['characteristic'] = 'RotationSpeed'
         if fan_speed == '3':
