@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 9.18 - Gen Fix Air Purifier Active State Value
+#Northcliff Home Manager - 9.19 Gen Set Homebridge NO2 Limit to 1000 ug/m3
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -4433,6 +4433,8 @@ class EnviroClass(object):
                     # Convert ppm to ug/m3 for Outdoor homebridge gases data (except for Red and NH3, which is in mg/m3)
                     if reading == 'Oxi':
                         homebridge_data[reading] = round(1000* parsed_json[reading] * 46/24.45, 0)
+                        if homebridge_data[reading] > 1000: # Set max NO2 Level to 1000 ug/m3 (HAP Limit)
+                            homebridge_data[reading] = 1000
                     elif reading == 'Red':
                         homebridge_data[reading] = round(parsed_json[reading] * 28/24.45, 2)
                     elif reading == 'NH3':
