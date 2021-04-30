@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 9.19 Gen Set Homebridge NO2 Limit to 1000 ug/m3
+#Northcliff Home Manager - 9.20 - Gen Set Homebridge Enviro NH3 and Reducing Limits to 1000 mg/m3
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -4430,15 +4430,19 @@ class EnviroClass(object):
                         #print('AQI is at Level 0')
                         pass
                     domoticz_data[reading] = parsed_json[reading]
-                    # Convert ppm to ug/m3 for Outdoor homebridge gases data (except for Red and NH3, which is in mg/m3)
+                    # Convert ppm to ug/m3 for Enviro homebridge gases data (except for Red and NH3, which is in mg/m3)
                     if reading == 'Oxi':
                         homebridge_data[reading] = round(1000* parsed_json[reading] * 46/24.45, 0)
                         if homebridge_data[reading] > 1000: # Set max NO2 Level to 1000 ug/m3 (HAP Limit)
                             homebridge_data[reading] = 1000
                     elif reading == 'Red':
-                        homebridge_data[reading] = round(parsed_json[reading] * 28/24.45, 2)
+                        homebridge_data[reading] = round(parsed_json[reading] * 28 / 24.45, 2)
+                        if homebridge_data[reading] > 1000:  # Set max Red Level to 1000 mg/m3 (HAP Limit)
+                            homebridge_data[reading] = 1000
                     elif reading == 'NH3':
-                        homebridge_data[reading] = round(parsed_json[reading] * 17/24.45, 2)
+                        homebridge_data[reading] = round(parsed_json[reading] * 17 / 24.45, 2)
+                        if homebridge_data[reading] > 1000:  # Set max NH3 Level to 1000 mg/m3 (HAP Limit)
+                            homebridge_data[reading] = 1000
                     else:
                         homebridge_data[reading] = parsed_json[reading]
                     if reading == 'CO2':
