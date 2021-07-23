@@ -4,12 +4,12 @@ This is a Raspberry Pi based Home Automation Manager. It utilises mosquitto, Hom
 ## System Overview
 ![System Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20System%20Overview.png).
 
-The [System Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20System%20Overview.pdf) shows the four Raspberry Pi based controllers that comprise the system, the mqtt messages that allow them to communicate with each other and the end devices that they manage.  This system overview does not include the EV charger functionality. That can be found [here](https://github.com/roscoe81/ev-charger-monitor/blob/main/Documentation/Northcliff%20EV%20Charger%20Monitor%20Overview%20Gen.png).
+The [System Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20System%20Overview.pdf) shows the four Raspberry Pi based controllers that comprise the system, the mqtt messages that allow them to communicate with each other and the end devices that they manage.  This system overview does not include the EV charger functionality. That can be found [here](https://github.com/roscoe81/ev-charger-monitor/blob/main/Documentation/Northcliff%20EV%20Charger%20Monitor%20Overview%20Gen.png). It also does not include the Fan Monitor functionality. That can be found [here](https://github.com/roscoe81/fan-monitor/blob/main/Documentation/Northcliff%20Fan%20Monitor%20Overview%20Gen.png).
 
 ## Home Manager Functional Overview
 ![Functional Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20OOP%20Functional%20Overview.png).
 
-The [Functional Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20OOP%20Functional%20Overview.pdf) outlines the Python objects of the Home Manager controller and how they interact with Domoticz, Homebridge and the three other controllers that comprise the overall system.  This functional overview does not yet include the EV charger functionality.
+The [Functional Overview](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Home%20Automation%20OOP%20Functional%20Overview.pdf) outlines the Python objects of the Home Manager controller and how they interact with Domoticz, Homebridge and the three other controllers that comprise the overall system.  This functional overview does not yet include the EV charger or Fan Monitor functionality.
 
 ## Aircon Controller
 This is a [controller](https://github.com/roscoe81/Aircon-Controller) for a Mitsubishi air conditioner (Model FDC508HES3) to provide mqtt control of the airconditioner using the serial communications link that runs between Mitsubishi's RCD-H-E remote control unit and the CNB port on the air conditioner's control board. Also provides the ability to control a damper so that airflow can be directed to the correct air conditioning zone. An inclinometer is provided for the damper in order to detect its position and control the air flow between zones with greater precision. This Home Manager code captures the actual temperatures of each room, compares those temperatures to desired temperature levels and controls the air conditioner and damper to align the desired and actual temperatures. Room temperatures can be set and monitored by the Apple Home App on an iOS device or via Domoticz. Logs are captured allow the aircon's performance to be monitored, analysed and adjusted. Examples of such analysis is shown below.
@@ -82,7 +82,10 @@ The Home Manager monitors a Seneye Aquarium Sensor to monitor ph, NH3 and Temper
 The [Environment Monitor](https://github.com/roscoe81/enviro-monitor) captures, displays and reports on air particles and gases. Its readings are received via mqtt messages and are recorded/displayed in Domoticz and sent to Homebridge.
 
 ## EV Charger Monitor
-The Home Manager can monitor and control an EV charger by interworking with an [EV Charger Monitor](https://github.com/roscoe81/ev-charger-monitor).
+The Home Manager can remotely monitor and control an EV charger by interworking with an [EV Charger Monitor](https://github.com/roscoe81/ev-charger-monitor). Requires the mqtt broker to be bridged with topic prefix of TTN.
+
+## Fan Monitor
+The Home Manager can remotely monitor a building's ventilation fan status with a [Fan Monitor](https://github.com/roscoe81/fan-monitor). Requires the mqtt broker to be bridged with topic prefix of TTN1.
 
 ## License
 This project is licensed under the MIT License - see the LICENSE.md file for details
