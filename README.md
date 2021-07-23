@@ -82,10 +82,10 @@ The Home Manager monitors a Seneye Aquarium Sensor to monitor ph, NH3 and Temper
 The [Environment Monitor](https://github.com/roscoe81/enviro-monitor) captures, displays and reports on air particles and gases. Its readings are received via mqtt messages and are recorded/displayed in Domoticz and sent to Homebridge.
 
 ## EV Charger Monitor
-The Home Manager can remotely monitor and control an EV charger by interworking with an [EV Charger Monitor](https://github.com/roscoe81/ev-charger-monitor).
+The Home Manager can remotely monitor and control an EV charger by interworking with an [EV Charger Monitor](https://github.com/roscoe81/ev-charger-monitor). Requires the mqtt broker to be bridged with topic prefix of TTN.
 
 ## Fan Monitor
-The Home Manager can remotely monitor a building's ventilation fan status with a [Fan Monitor](https://github.com/roscoe81/fan-monitor).
+The Home Manager can remotely monitor a building's ventilation fan status with a [Fan Monitor](https://github.com/roscoe81/fan-monitor). Requires the mqtt broker to be bridged with topic prefix of TTN1.
 
 ## License
 This project is licensed under the MIT License - see the LICENSE.md file for details
