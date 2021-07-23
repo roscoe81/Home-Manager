@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 9.20 - Gen Set Homebridge Enviro NH3 and Reducing Limits to 1000 mg/m3
+#Northcliff Home Manager - 9.29 - Gen Fan Monitor with Pushover
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -13,6 +13,8 @@ import os
 import asyncio
 import aiohttp
 from luftdaten import Luftdaten
+import http.client
+import urllib
 
 class NorthcliffHomeManagerClass(object):
     def __init__(self, log_aircon_cost_data, log_aircon_damper_data, log_aircon_temp_data, load_previous_aircon_effectiveness, perform_homebridge_config_check):
@@ -39,6 +41,7 @@ class NorthcliffHomeManagerClass(object):
         self.enviro_monitors_present = True  # Enables outdoor air quality monitoring
         self.enable_reboot = True # Enables remote reboot function
         self.ev_charger_present = True # Enables EV Charger function
+        self.fan_monitor_present = True # Enables Fan Monitor function
         # List the multisensor names
         self.multisensor_names = ['Living', 'Study', 'Kitchen', 'North', 'South', 'Main', 'Rear Balcony', 'North Balcony', 'South Balcony']
         # List the outdoor sensors
@@ -52,7 +55,7 @@ class NorthcliffHomeManagerClass(object):
         # List the flood sensors
         self.flood_sensor_names = ['Kitchen', 'Aquarium']
         # Name each light dimmer and map to its device id
-        self.light_dimmer_names_device_id = {'Lounge Light': 323, 'TV Light': 325, 'Dining Light': 324, 'Study Light': 648, 'Kitchen Light': 504, 'Hallway Light': 328, 'North Light': 463,
+        self.light_dimmer_names_device_id = {'Lounge Light': 325, 'Entry Light': 324, 'Dining Light': 323, 'Study Light': 648, 'Kitchen Light': 504, 'Hallway Light': 328, 'North Light': 463,
                                               'South Light': 475, 'Main Light': 451, 'North Balcony Light': 517, 'South Balcony Light': 518}
         self.colour_light_dimmer_names = [] # Dimmers in self.light_dimmer_names_device_id that require hue and saturation characteristics
         # Set up the config for each aircon, including their mqtt topics
@@ -78,7 +81,8 @@ class NorthcliffHomeManagerClass(object):
         self.doorbell_incoming_mqtt_topic = 'DoorbellStatus'
         self.garage_door_incoming_mqtt_topic = 'GarageStatus'
         self.enviro_monitor_incoming_mqtt_topics = ['Outdoor EM0', 'Indoor EM1']
-        self.ev_charger_incoming_mqtt_topic = 'ttn/<Your TTN Application ID>/up/state'
+        self.ev_charger_incoming_mqtt_topic = 'ttn/<Your TTN EV Charger Application ID>/up'
+        self.fan_monitor_incoming_mqtt_topic = 'ttn1/<Your TTN Fan Monitor Application ID>/up'
         # Set up the config for each window blind
         self.window_blind_config = {'Living Room Blinds': {'blind host name': '<mylink host name>', 'blind port': 44100, 'light sensor': 'South Balcony',
                                                             'temp sensor': 'North Balcony', 'sunlight threshold 0': 100,'sunlight threshold 1': 1000,
@@ -137,6 +141,14 @@ class NorthcliffHomeManagerClass(object):
                                           'Device IDs': {'P1': 789, 'P2.5': 790, 'P10': 791, 'AQI': 792, 'NH3': 795, 'Oxi': 793, 'Red': 794,
                                                           'Temp': 824, 'Hum': 824, 'Bar': 824, 'Lux':820, 'CO2': 825, 'VOC': 826, 'Noise': 837}}}
         self.enable_outdoor_enviro_monitor_luftdaten_backup = True # Enable Luftdaten readings if no PM readings from outdoor Enviro Monitor
+        # Set up Fan Monitor indicator light names
+        self.fan_monitor_list = ["Exhaust", "Outside", "Garage"] # List of fans to be monitored. Fan with LoRaWAN lsb is first in the list
+        self.fan_indicator_list = ["Fault", "Run"] # List of fan indicators. Indicator with LoRaWAN lsb is first in the list
+        # Compose fan_light_list that has an indicator for each monitored fan. Fan/Indicator with LoRaWAN lsb is first in the list
+        self.fan_light_list = []
+        for i in range(len(self.fan_monitor_list)):
+            for j in range(len(self.fan_indicator_list)):
+                self.fan_light_list.append(self.fan_monitor_list[i] + " " + self.fan_indicator_list[j])
         self.watchdog_update_time = 0
                                
     def on_connect(self, client, userdata, flags, rc):
@@ -150,6 +162,7 @@ class NorthcliffHomeManagerClass(object):
         client.subscribe(self.doorbell_incoming_mqtt_topic) # Subscribe to the Doorbell Monitor
         client.subscribe(self.garage_door_incoming_mqtt_topic) # Subscribe to the Garage Door Controller
         client.subscribe(self.ev_charger_incoming_mqtt_topic) # Subscribe to the EV Charger Controller
+        client.subscribe(self.fan_monitor_incoming_mqtt_topic) # Subscribe to the Fan Monitor
         for enviro_name in self.enviro_config:
             client.subscribe(self.enviro_config[enviro_name]['mqtt Topic']) # Subscribe to the Enviro Monitors
         for aircon_name in self.aircon_config: # Subscribe to the Aircon Controllers
@@ -173,7 +186,9 @@ class NorthcliffHomeManagerClass(object):
             doorbell.capture_doorbell_status(parsed_json) # Capture doorbell status
         elif msg.topic == self.ev_charger_incoming_mqtt_topic:
             #print('EV Charger Message', parsed_json)
-            ev_charger.capture_ev_charger_state(parsed_json)
+            ev_charger.capture_ev_charger_state(parsed_json['uplink_message']['decoded_payload']['state'])
+        elif msg.topic == self.fan_monitor_incoming_mqtt_topic:
+            fan_monitor.capture_fan_light_state(parsed_json['uplink_message']['decoded_payload']['state'])
         else: # Test for enviro or aircon messages
             identified_message = False
             for enviro_name in self.enviro_config:
@@ -226,6 +241,8 @@ class NorthcliffHomeManagerClass(object):
             key_state_log['EV Charger State'] = ev_charger.state
             key_state_log['EV Charger Command State'] = ev_charger.command_state
             key_state_log['EV Charger Locked State'] = ev_charger.locked_state # Only use for versions prior to 9.9
+        if self.fan_monitor_present:
+            key_state_log['Fan Light Monitor State'] = fan_monitor.fan_light_state
         with open(self.key_state_log_file_name, 'w') as f:
             f.write(json.dumps(key_state_log))   
 
@@ -274,6 +291,9 @@ class NorthcliffHomeManagerClass(object):
             ev_charger.state = parsed_key_states['EV Charger State']
             if 'EV Charger Command State' in parsed_key_states: # Only load ev_charger.command_state if it's in the log (backwards compatibility)
                 ev_charger.command_state = parsed_key_states['EV Charger Command State']
+        if self.fan_monitor_present and 'Fan Light Monitor State' in parsed_key_states:
+            fan_monitor.fan_light_state = parsed_key_states['Fan Light Monitor State']
+            homebridge.update_fan_light_state(fan_monitor.fan_light_state)
         if self.powerpoints_present and 'Powerpoint State' in parsed_key_states:
             for name in parsed_key_states['Powerpoint State']:
                 powerpoint[name].on_off(parsed_key_states['Powerpoint State'][name])
@@ -556,6 +576,10 @@ class HomebridgeClass(object):
         self.ev_charger_enable_charger_format = {'service_name': 'Enable Charger', 'service': 'Door', 'characteristics_properties': {'CurrentPosition':{'minValue': 0, 'maxValue': 100, 'minStep': 100}, "TargetPosition": {"minValue": 0,"maxValue": 100,"minStep": 100}}}
         self.ev_charger_disable_charger_format = {'service_name': 'Disable Charger', 'service': 'Door', 'characteristics_properties': {'CurrentPosition':{'minValue': 0, 'maxValue': 100, 'minStep': 100}, "TargetPosition": {"minValue": 0,"maxValue": 100,"minStep": 100}}}
         self.ev_charger_start_charging_format = {'service_name': 'Start Charging', 'service': 'Door', 'characteristics_properties': {'CurrentPosition':{'minValue': 0, 'maxValue': 100, 'minStep': 100}, "TargetPosition": {"minValue": 0,"maxValue": 100,"minStep": 100}}}
+        self.fan_monitor_state_format = {'name': 'Roof Fans', 'service': 'Fan', 'service_name': ' Fan State', 'characteristics_properties':{}}
+        self.fan_monitor_fault_format = {'name': 'Roof Fans', 'service': 'ContactSensor', 'service_name': ' Fan Fault', 'characteristics_properties':{}}
+        self.fan_monitor_stopped_format = {'name': 'Roof Fans', 'service': 'ContactSensor', 'service_name': ' Fan Stopped', 'characteristics_properties':{}}
+        
         # Set up config
         self.current_config = {}
         self.ack_cache = {}
@@ -872,11 +896,27 @@ class HomebridgeClass(object):
                                                                                 self.ev_charger_start_charging_format['characteristics_properties']}}
         else:
             ev_charger_homebridge_config = {}
-            
+        # Fan Monitor
+        if mgr.fan_monitor_present:
+            fan_monitor_homebridge_config = {}
+            fan_monitor_homebridge_config[self.fan_monitor_state_format['name']] = {}
+            for fan in mgr.fan_monitor_list:
+                fan_monitor_homebridge_config[self.fan_monitor_state_format['name']] = {**fan_monitor_homebridge_config[self.fan_monitor_state_format['name']], **{fan + self.fan_monitor_state_format['service_name']:
+                                                                                     {self.fan_monitor_state_format['service']:
+                                                                                      self.fan_monitor_state_format['characteristics_properties']}},
+                                                                                     **{fan + self.fan_monitor_fault_format['service_name']:
+                                                                                     {self.fan_monitor_fault_format['service']:
+                                                                                      self.fan_monitor_fault_format['characteristics_properties']}},
+                                                                                     **{fan + self.fan_monitor_stopped_format['service_name']:
+                                                                                     {self.fan_monitor_stopped_format['service']:
+                                                                                      self.fan_monitor_stopped_format['characteristics_properties']}}}
+            print("Required Fan Monitor HB Config", fan_monitor_homebridge_config)
+        else:
+            fan_monitor_homebridge_config = {}
         # Build entire required_homebridge_config
         required_homebridge_config = {**blinds_homebridge_config, **door_sensors_homebridge_config, **garage_door_homebridge_config, **reboot_homebridge_config, **light_dimmers_homebridge_config,
                                       **aircon_homebridge_config, **doorbell_homebridge_config, **air_purifiers_homebridge_config, **multisensors_homebridge_config, **powerpoints_homebridge_config,
-                                      **flood_sensors_homebridge_config, **enviro_monitors_homebridge_config, **ev_charger_homebridge_config}
+                                      **flood_sensors_homebridge_config, **enviro_monitors_homebridge_config, **ev_charger_homebridge_config, **fan_monitor_homebridge_config}
         return required_homebridge_config
                     
     def find_incorrect_accessories(self, required_homebridge_config, current_homebridge_config):
@@ -1076,6 +1116,9 @@ class HomebridgeClass(object):
         elif parsed_json['name'] == self.ev_charger_control_format['name']: # If it's an EV charger control button.
             #print("Charger Button", parsed_json)
             self.process_ev_charger_button(parsed_json)
+        elif parsed_json['name'] == self.fan_monitor_state_format['name']:
+            #print("Fan Monitor Button", parsed_json)
+            self.process_fan_monitor_button(parsed_json)
         else: # Test for aircon buttons and process if true
             identified_button = False
             for aircon_name in self.aircon_names:
@@ -1238,6 +1281,18 @@ class HomebridgeClass(object):
         else:
             print('Unrecognised EV Charger Button Pressed', parsed_json)
             pass
+        
+    def process_fan_monitor_button(self, parsed_json):
+        homebridge_json = {}
+        #print('Homebridge: Process Fan Monitor Button', parsed_json)
+        # Ignore all button presses and reset to their pre-pressed states
+        time.sleep(1)
+        fan = parsed_json['service_name'][0:parsed_json['service_name'].find("Fan State")-1]
+        homebridge_json['name'] = parsed_json['name']
+        homebridge_json['characteristic'] = 'On'
+        homebridge_json['service_name'] = parsed_json['service_name']
+        homebridge_json['value'] = fan_monitor.fan_light_state[fan + ' Run']
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json)) 
 
     def process_garage_door_button(self, parsed_json):
         #print('Homebridge: Process Garage Door Button', parsed_json)
@@ -2039,6 +2094,33 @@ class HomebridgeClass(object):
             homebridge_json['value'] = state[item]
             #print("Publishing Homebridge EV Charger State", homebridge_json)
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            
+    def update_fan_light_state(self, state):
+        print("Updating Homebridge Fan Light States")
+        homebridge_json = {}
+        homebridge_json['name'] = self.fan_monitor_state_format['name']
+        for fan in mgr.fan_monitor_list:
+            homebridge_json['service'] = self.fan_monitor_state_format['service']
+            homebridge_json['service_name'] = fan + self.fan_monitor_state_format['service_name']
+            homebridge_json['characteristic'] = 'On'
+            homebridge_json['value'] = state[fan + ' Run']
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['service'] = self.fan_monitor_fault_format['service']
+            homebridge_json['service_name'] = fan + self.fan_monitor_fault_format['service_name']
+            homebridge_json['characteristic'] = 'ContactSensorState'
+            if state[fan + ' Fault']:
+                homebridge_json['value'] = 1
+            else:
+                homebridge_json['value'] = 0
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['service'] = self.fan_monitor_stopped_format['service']
+            homebridge_json['service_name'] = fan + self.fan_monitor_stopped_format['service_name']
+            homebridge_json['characteristic'] = 'ContactSensorState'
+            if state[fan + ' Run']:
+                homebridge_json['value'] = 0
+            else:
+                homebridge_json['value'] = 1
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))        
             
     def update_ev_charger_command_state(self, command_state):
         homebridge_json = {}
@@ -4436,12 +4518,12 @@ class EnviroClass(object):
                         if homebridge_data[reading] > 1000: # Set max NO2 Level to 1000 ug/m3 (HAP Limit)
                             homebridge_data[reading] = 1000
                     elif reading == 'Red':
-                        homebridge_data[reading] = round(parsed_json[reading] * 28 / 24.45, 2)
-                        if homebridge_data[reading] > 1000:  # Set max Red Level to 1000 mg/m3 (HAP Limit)
+                        homebridge_data[reading] = round(parsed_json[reading] * 28/24.45, 2)
+                        if homebridge_data[reading] > 1000: # Set max Red Level to 1000 mg/m3 (HAP Limit)
                             homebridge_data[reading] = 1000
                     elif reading == 'NH3':
-                        homebridge_data[reading] = round(parsed_json[reading] * 17 / 24.45, 2)
-                        if homebridge_data[reading] > 1000:  # Set max NH3 Level to 1000 mg/m3 (HAP Limit)
+                        homebridge_data[reading] = round(parsed_json[reading] * 17/24.45, 2)
+                        if homebridge_data[reading] > 1000: # Set max NH3 Level to 1000 mg/m3 (HAP Limit)
                             homebridge_data[reading] = 1000
                     else:
                         homebridge_data[reading] = parsed_json[reading]
@@ -4520,7 +4602,7 @@ class EVChargerClass(object):
         
     def capture_ev_charger_state(self, parsed_json):
         if "ACK" in parsed_json: # Update command_state if it's an ACK message
-            #print("Received ACK Message", parsed_json)
+            print("Received ACK Message", parsed_json)
             for command_item in self.command_state:# Check which ACK has been received
                 if parsed_json == self.command_ack_map[command_item]:
                     self.command_state[command_item]['ACK'] = 100
@@ -4530,8 +4612,8 @@ class EVChargerClass(object):
             mgr.log_key_states("EV Charger ACK Update") # Log ACK Update
             homebridge.update_ev_charger_command_state(self.command_state)           
         else: # Process State Update
-            #mgr.print_update('EV Charger State Update on ')
-            #print(parsed_json)
+            mgr.print_update('EV Charger State Update on ')
+            print(parsed_json)
             for state_item in self.state:# Check which state has been received
                 if state_item == parsed_json: # Found which received state
                     if self.state[state_item]: # If it's already set to True
@@ -4611,6 +4693,70 @@ class EVChargerClass(object):
             print("Sending EV Command", ev_charger_json)
             client.publish(self.outgoing_mqtt_topic, json.dumps(ev_charger_json))
             
+class FanMonitorClass(object):
+    def __init__(self, fan_light_list, pushover_user, pushover_token):
+        self.fan_light_list = fan_light_list
+        self.fan_light_state = {fan_light: False for fan_light in self.fan_light_list}
+        self.pushover_user = pushover_user
+        self.pushover_token = pushover_token
+        
+    def capture_fan_light_state(self, raw_state):
+        print('Fan Monitor Message Received')
+        print("Raw Fan Light State:", raw_state)
+        fan_light_state_change = False
+        decimal_state = int(raw_state, base=16) # Convert Hex String to decimal
+        for y in range(0, 6): # Check each of 6 bits
+            if decimal_state & 1:
+                state = 'On'
+                if not self.fan_light_state[self.fan_light_list[y]]: # If currently in 'Off' state
+                    fan_light_state_change = True
+                    self.fan_light_state[self.fan_light_list[y]] = True
+            else:
+                state = 'Off'
+                if self.fan_light_state[self.fan_light_list[y]]: # If currently in 'On' state
+                    fan_light_state_change = True
+                    self.fan_light_state[self.fan_light_list[y]] = False
+            print(self.fan_light_list[y], state)
+            decimal_state = decimal_state >> 1 # Shift to examine next bit
+        print(self.fan_light_state)
+        if fan_light_state_change: # Update homebridge if there's a fan light state change
+            print("Fan Light State Change")
+            if self.pushover_user != "": # Send pushover message if enabled
+                # Check States to determine if there's an issue
+                fans_ok = True
+                fault_message = "Northcliff Fan Issue(s): "
+                for indicator in self.fan_light_state:
+                    if "Fault" in indicator and self.fan_light_state[indicator]:
+                        fans_ok = False
+                        fault_message = fault_message + (indicator + " Indicator is On. ")
+                    elif "Run" in indicator and not self.fan_light_state[indicator]:
+                        fans_ok = False
+                        fault_message = fault_message + (indicator + " Indicator is Off. ")     
+                if fans_ok:
+                    pushed_message = "All Fans On and Functional"
+                    alert_sound = "magic"
+                else:
+                    pushed_message = fault_message
+                    alert_sound = "siren"
+                self.send_pushover_message(self.pushover_token, self.pushover_user, pushed_message, alert_sound)
+            homebridge.update_fan_light_state(self.fan_light_state)
+            mgr.log_key_states("Fan Light Monitor State") # Log state change
+        else:
+            print("No Fan Light State Change")
+            
+    def send_pushover_message(self, token, user, pushed_message, alert_sound):
+        print("Sending Pushover Message")
+        conn = http.client.HTTPSConnection("api.pushover.net:443")
+        conn.request("POST", "/1/messages.json",
+        urllib.parse.urlencode({
+                        "token": token,
+                        "user": user,
+                        "html": "1",
+                        "title": "Northcliff Fans",
+                        "message": pushed_message,
+                        "sound": alert_sound,
+                        }), { "Content-type": "application/x-www-form-urlencoded" })
+                    
 if __name__ == '__main__': # This is where to overall code kicks off
     # Create a Home Manager instance
     mgr = NorthcliffHomeManagerClass(log_aircon_cost_data = True, log_aircon_damper_data = False, log_aircon_temp_data = False,
@@ -4672,6 +4818,11 @@ if __name__ == '__main__': # This is where to overall code kicks off
     if mgr.ev_charger_present:
         # Create EV Charger instance
         ev_charger = EVChargerClass()
+    if mgr.fan_monitor_present:
+        # Create Fan Monitor instance
+        pushover_user = "<Your Fan Monitor Pushover User Key>"
+        pushover_token = "<Your Fan Monitor Pushover Token>"
+        fan_monitor = FanMonitorClass(mgr.fan_light_list, pushover_user, pushover_token)
     # Create and set up an mqtt instance                             
     client = mqtt.Client("<mqtt client name>")
     client.on_connect = mgr.on_connect
