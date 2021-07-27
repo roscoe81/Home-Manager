@@ -54,7 +54,7 @@ This [Garage Door Opener](https://github.com/roscoe81/Garage-Door-Opener) is a s
 ### Garage Door Opener Packaging
 ![Garage Door Opener Packaging](https://github.com/roscoe81/Garage-Door-Opener/blob/master/Schematics%20and%20Photos/IMG_3204.png)
 
-### Garage Door Opener Apple Home App Screenshot
+### Garage Door Opener Apple Home App Screenshot (with EV Charger Controls)
 ![Garage Door Opener Screenshot (with EV Charger Controls)](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Garage_Screen.png)
 
 ## Window Blind Control
@@ -87,7 +87,7 @@ The Home Manager can remotely monitor and control an EV charger by interworking 
 ## Fan Monitor
 The Home Manager can remotely monitor a building's ventilation fan status with a [Fan Monitor](https://github.com/roscoe81/fan-monitor). Requires the mqtt broker to be bridged with topic prefix of TTN1.
 
-### Monitor Apple Home App Screenshot
+### Fan Monitor Apple Home App Screenshot
 ![Fan Monitor Screenshot](https://github.com/roscoe81/Home-Manager/blob/master/Documentation/Plant_Room_Screen.png)
 
 ## License
