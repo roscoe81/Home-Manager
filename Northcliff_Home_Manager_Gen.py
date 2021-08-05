@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 9.38 - Gen Fan Monitor and EV Charger Comms Check. Improved HB UI. Updated Electricity Rates
+#Northcliff Home Manager - 9.41 - Gen
 # Requires minimum Doorbell V2.5, HM Display 3.8, Aircon V3.47, homebridge-mqtt v0.6.2
 import paho.mqtt.client as mqtt
 import struct
@@ -82,6 +82,7 @@ class NorthcliffHomeManagerClass(object):
         self.garage_door_incoming_mqtt_topic = 'GarageStatus'
         self.enviro_monitor_incoming_mqtt_topics = ['Outdoor EM0', 'Indoor EM1']
         self.ev_charger_incoming_mqtt_topic = 'ttn/<Your TTN EV Charger Application ID>/up'
+        #self.ev_charger_incoming_down_ack_topic = 'ttn/<Your TTN EV Charger Application ID>/down/ack'
         self.fan_monitor_incoming_mqtt_topic = 'ttn1/<Your TTN Fan Monitor Application ID>/up'
         # Set up the config for each window blind
         self.window_blind_config = {'Living Room Blinds': {'blind host name': '<mylink host name>', 'blind port': 44100, 'light sensor': 'South Balcony',
@@ -169,6 +170,7 @@ class NorthcliffHomeManagerClass(object):
         client.subscribe(self.doorbell_incoming_mqtt_topic) # Subscribe to the Doorbell Monitor
         client.subscribe(self.garage_door_incoming_mqtt_topic) # Subscribe to the Garage Door Controller
         client.subscribe(self.ev_charger_incoming_mqtt_topic) # Subscribe to the EV Charger Controller
+        #client.subscribe(self.ev_charger_incoming_mqtt_down_ack_topic) # Subscribe to the EV Charger Controller downlink acks
         client.subscribe(self.fan_monitor_incoming_mqtt_topic) # Subscribe to the Fan Monitor
         for enviro_name in self.enviro_config:
             client.subscribe(self.enviro_config[enviro_name]['mqtt Topic']) # Subscribe to the Enviro Monitors
@@ -195,6 +197,8 @@ class NorthcliffHomeManagerClass(object):
             #print('EV Charger Message', parsed_json)
             self.ev_charger_update_time = time.time()
             ev_charger.capture_ev_charger_state(parsed_json['uplink_message']['decoded_payload']['state'])
+        #elif msg.topic == self.ev_charger_incoming_mqtt_down_ack_topic:
+            #print('EV Charger Downlink Ack Message', parsed_json)       
         elif msg.topic == self.fan_monitor_incoming_mqtt_topic:
             self.fan_monitor_update_time = time.time()
             fan_monitor.capture_fan_light_state(parsed_json['uplink_message']['decoded_payload']['state'])
@@ -4626,7 +4630,7 @@ class EnviroClass(object):
 class EVChargerClass(object):
     def __init__(self):
         #print ('Instantiated EV Charger', self)
-        self.outgoing_mqtt_topic = 'ttn/<Your TTN Application ID>/down'
+        self.outgoing_mqtt_topic = 'ttn/<Your TTN Application ID>/down/push'
         # Set up EV Charger status dictionary with initial states set
         self.state = {'Not Connected': False, 'Connected and Locked': False, 'Charging': False,
                         'Charged': False, 'Disabled':False}
@@ -4685,7 +4689,7 @@ class EVChargerClass(object):
         
     def process_ev_button(self, button_name):
         #print("Button Name", button_name)
-        ev_charger_json = {"port": 1, "confirmed": True}
+        ev_charger_json = {"f_port": 1, "confirmed": True}
         valid_button = True
         if button_name == 'Disable Charger':
             if self.state['Charging'] or self.state['Charged']: # Only process button if the charger is charging or charged
@@ -4695,7 +4699,7 @@ class EVChargerClass(object):
                 self.command_state['Start Charging']['Requested'] = 0
                 mgr.log_key_states("EV Charger Command State Change") # Log state change
                 homebridge.update_ev_charger_command_state(self.command_state)
-                ev_charger_json["payload_fields"] = {"mode": "Lock Outlet"}
+                ev_charger_json["decoded_payload"] = {"mode": "Lock Outlet"}
             else:
                print("Trying to disable charger when not in 'Charging' or 'Charged' state. Button ignored")
                #print(self.command_state)
@@ -4709,7 +4713,7 @@ class EVChargerClass(object):
                 self.command_state['Start Charging']['Requested'] = 0
                 mgr.log_key_states("EV Charger Command State Change") # Log state change
                 homebridge.update_ev_charger_command_state(self.command_state)
-                ev_charger_json["payload_fields"] = {"mode": "Unlock Outlet"}
+                ev_charger_json["decoded_payload"] = {"mode": "Unlock Outlet"}
             else:
                 print("Trying to enable charger when not in 'Disabled' state. Button ignored")
                 #print(self.command_state)
@@ -4721,7 +4725,7 @@ class EVChargerClass(object):
                 self.command_state['Start Charging']['Requested'] = 100
                 mgr.log_key_states("EV Charger Command State Change") # Log state change
                 homebridge.update_ev_charger_command_state(self.command_state)
-                ev_charger_json["payload_fields"] = {"mode": "Reset Charger"}
+                ev_charger_json["decoded_payload"] = {"mode": "Reset Charger"}
             else:
                 print("Trying to start charging when not in 'Connected and Locked' state. Button ignored")
                 #print(self.command_state)
@@ -4731,6 +4735,7 @@ class EVChargerClass(object):
             valid_button = False
         if valid_button:
             # Send button message to the EV Controller
+            ev_charger_json = {"downlinks":[ev_charger_json]}
             print("Sending EV Command", ev_charger_json)
             client.publish(self.outgoing_mqtt_topic, json.dumps(ev_charger_json))
             
