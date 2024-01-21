@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 11.20 - Gen
-#Requires Aircon Controller 5.0, Doorbell V2.5, HM Display 3.8, homebridge-mqtt v0.6.2 or higher
+#Northcliff Home Manager - 11.33 - Gen
+#Requires Aircon Controller 5.0 or higher
 import paho.mqtt.client as mqtt
 import struct
 import time
@@ -44,6 +44,8 @@ class NorthcliffHomeManagerClass(object):
         self.fan_monitor_present = True # Enables Fan Monitor function
         self.hm_display_present = False # Enables HM Display brightness homebridge config function
         self.main_room_window_shades_present = True # Enables Homebridge config for main room window shades
+        self.enviro_wind_monitors_present = True # Enable estimation of wind velocity and direction using two enviro monitors
+        self.dynalite_homebridge_gateway_present = True # Enables configuration of homebridge dynalite controls
         # List the multisensor names
         self.multisensor_names = ['Living', 'Study', 'Kitchen', 'North', 'South', 'Main', 'Rear Balcony', 'North Balcony', 'South Balcony', 'Comms']
         # List the outdoor sensors
@@ -53,7 +55,7 @@ class NorthcliffHomeManagerClass(object):
         # Name each door sensor and identify the room that contains that door sensor
         self.door_sensor_names_locations = {'North Living Room': 'Living Room', 'South Living Room': 'Living Room', 'Entry': 'Entry'}
         # Name each powerpoint and map to its device id
-        self.powerpoint_names_device_id = {'Coffee': 646} #{'Coffee': 646, 'South Balcony': 626, 'North Balcony': 647}
+        self.powerpoint_names_device_id = {'Coffee': 646, 'South Balcony': 1029, 'North Balcony': 1035} #{'Coffee': 646, 'South Balcony': 626, 'North Balcony': 647}
         # List the flood sensors
         self.flood_sensor_names = ['Kitchen', 'Aquarium', 'Laundry']
         # Name each light dimmer and map to its device id
@@ -143,13 +145,13 @@ class NorthcliffHomeManagerClass(object):
         enviro_capture_time = heartbeat_check_start_time
         self.enviro_config = {'Outdoor': {'mqtt Topic': 'Outdoor EM0', 'Capture Non AQI': True, 'Homebridge Display': True, 'Wind': 'East', 'Capture Time': enviro_capture_time, 'Luftdaten Sensor ID': 99999,
                                           'Device IDs': {'P1': 784, 'P2.5': 778, 'P10': 779, 'AQI': 780, 'NH3': 781, 'Oxi': 782, 'Red': 783,
-                                                          'Temp': 819, 'Hum': 819, 'Bar': 819, 'Lux':821, 'Noise': 838, 'Wind': 912}},
+                                                          'Temp': 819, 'Hum': 819, 'Dew': 1063, 'Bar': 819, 'Lux':821, 'Noise': 838, 'Wind': 912}},
                               'Indoor': {'mqtt Topic': 'Indoor EM1', 'Capture Non AQI': True, 'Homebridge Display': True,
                                           'Device IDs': {'P1': 789, 'P2.5': 790, 'P10': 791, 'AQI': 792, 'NH3': 795, 'Oxi': 793, 'Red': 794,
-                                                          'Temp': 824, 'Hum': 824, 'Bar': 824, 'Lux':820, 'CO2': 825, 'VOC': 826, 'Noise': 837}},
+                                                          'Temp': 824, 'Hum': 824, 'Dew': 1062,'Bar': 824, 'Lux':820, 'CO2': 825, 'VOC': 826, 'Noise': 837}},
                               'Front Outdoor': {'mqtt Topic': 'Outdoor EM012', 'Capture Non AQI': True, 'Homebridge Display': False, 'Wind': 'West',
                                           'Device IDs': {'P1': 909, 'P2.5': 908, 'P10': 907, 'AQI': 906, 'NH3': 905, 'Oxi': 904, 'Red': 903,
-                                                          'Temp': 899, 'Hum': 899, 'Bar': 899, 'Lux':901, 'Noise': 902, 'Wind': 912}}}
+                                                          'Temp': 899, 'Hum': 899, 'Dew': 1061, 'Bar': 899, 'Lux':901, 'Noise': 902, 'Wind': 912}}}
         self.enable_outdoor_enviro_monitor_luftdaten_backup = True # Enable Luftdaten readings if no PM readings from outdoor Enviro Monitor
         self.enviro_wind_config = {'Front Outdoor': {'Air Pressure': None, 'Direction': 'West', 'Offset': 0.0}, 'Outdoor': {'Air Pressure': None, 'Direction': 'East', 'Offset': -0.25}}
         self.enviro_wind_distance = 23 #The distance between enviro air pressure sources in metres
@@ -463,7 +465,8 @@ class NorthcliffHomeManagerClass(object):
                                 if valid_aquarium_reading:
                                     domoticz.update_aquarium(ph, temp, nh3)
                                 else:
-                                    domoticz.update_aquarium("7", temp, "0")
+                                    domoticz.update_aquarium("7", temp, "0") # Still send temp if the slide is out of date
+                                homebridge.update_aquarium_temp(temp)
                                 previous_aquarium_reading_time = reading_time
                         else:
                             print('Seneye Message Ignored: Comms Error') # Ignore bad Seneye comms messages
@@ -563,6 +566,9 @@ class HomebridgeClass(object):
         self.aircon_fan_format = {}
         self.aircon_fan_hi_format = {}
         self.aircon_fan_lo_format = {}
+        self.aircon_lo_fan_format = {}
+        self.aircon_hi_fan_format = {}
+        self.aircon_med_fan_format = {}
         self.aircon_compressor_format = {}
         self.aircon_heating_format = {}
         self.aircon_malfunction_format = {}
@@ -592,6 +598,9 @@ class HomebridgeClass(object):
             self.aircon_compressor_format[aircon_name] = {'name': aircon_name + ' Status', 'service_name': 'Compressor', 'service': 'ContactSensor', 'characteristics_properties': {}}
             self.aircon_heating_format[aircon_name] = {'name': aircon_name + ' Status', 'service_name': 'Heating', 'service': 'ContactSensor', 'characteristics_properties': {}}
             self.aircon_malfunction_format[aircon_name] = {'name': aircon_name + ' Status', 'service_name': 'Malfunction', 'service': 'ContactSensor', 'characteristics_properties': {}}  
+            self.aircon_hi_fan_format[aircon_name] = {'name': aircon_name + ' Hi Fan', 'service_name': 'Hi Fan Speed', 'service': 'Fan',  'characteristics_properties': {}}
+            self.aircon_med_fan_format[aircon_name] = {'name': aircon_name + ' Med Fan', 'service_name': 'Med Fan Speed', 'service': 'Fan',  'characteristics_properties': {}}
+            self.aircon_lo_fan_format[aircon_name] = {'name': aircon_name + ' Lo Fan', 'service_name': 'Lo Fan Speed', 'service': 'Fan',  'characteristics_properties': {}}
             for thermostat_name in self.aircon_thermostat_names[aircon_name]:
                 self.aircon_button_type[aircon_name + ' ' + thermostat_name] = 'Thermostat Control'
             self.aircon_names.append(aircon_name)
@@ -622,10 +631,14 @@ class HomebridgeClass(object):
         self.enviro_PM2_5_alert_format = {'name': ' PM2.5 Alert', 'service_name': ' PM2.5 Alert', 'service' :'MotionSensor', 'characteristics_properties': {'MotionDetected':{}}}
         self.enviro_temp_format = {'name': ' Env Temp', 'service': 'TemperatureSensor', 'service_name': ' Env Temp', 'characteristics_properties': {}}
         self.enviro_hum_format = {'name': ' Env Hum', 'service': 'HumiditySensor', 'service_name': ' Env Hum', 'characteristics_properties': {}}
+        self.enviro_dew_format = {'name': ' Env Dew', 'service': 'TemperatureSensor', 'service_name': ' Env Dew', 'characteristics_properties': {}}
         self.enviro_lux_format = {'name': ' Env Lux', 'service': 'LightSensor', 'service_name': ' Env Lux', 'characteristics_properties': {}}
         self.enviro_CO2_level_format = {'name': ' CO2', 'service_name': ' CO2', 'service' :'CarbonDioxideSensor', 'characteristics_properties': {'CarbonDioxideLevel': {}, 'CarbonDioxidePeakLevel': {}}}
-        self.enviro_wind_name = 'Balcony Wind'
+        self.enviro_wind_format = {'name': 'Balcony Wind', 'service_name': 'Balcony Wind', 'service': 'Fan', 'characteristics_properties': {}}
+        self.enviro_chill_format = {'name': 'Balcony Chill', 'service_name': 'Balcony Chill', 'service': 'TemperatureSensor',  'characteristics_properties': {'CurrentTemperature': {'minValue': 0, 'maxValue': 100, 'minStep': 0.1}}}
         self.enviro_wind_state = {'Active': False, 'Wind Speed': 0 , 'Direction': 0}
+        # Set up Aquarium Temperature'
+        self.aquarium_temp_format = {'name': 'Aquarium Temperature', 'service_name': 'Aquarium Temperature', 'service': 'TemperatureSensor',  'characteristics_properties': {'CurrentTemperature': {'minValue': 0, 'maxValue': 100, 'minStep': 0.1}}}
         # Set up EV Charger
         self.ev_charger_name_identifier = 'EV Charger'
         self.ev_charger_state_format = {'name': 'EV Charger State'}
@@ -669,7 +682,8 @@ class HomebridgeClass(object):
         required_homebridge_config = self.indentify_required_homebridge_config()
         missing_accessories, missing_accessories_services, additional_accessories_services, incorrect_accessories_services = self.find_incorrect_accessories(required_homebridge_config, self.current_config)
         excess_accessories = self.find_excess_accessories(required_homebridge_config, self.current_config)
-        print('Required Accessories', required_accessories)
+        print('Current Config', self.current_config)
+        print('Required Config', required_homebridge_config)
         print('Missing Accessories:', missing_accessories)
         print('Excess Accessories:', excess_accessories)
         print('Missing Services within Accessories:', missing_accessories_services)
@@ -805,7 +819,36 @@ class HomebridgeClass(object):
                 aircon_homebridge_config[self.aircon_reset_effectiveness_log_button_format[aircon_name]['name']] = {self.aircon_reset_effectiveness_log_button_format[aircon_name]['service_name']:
                                                                                                                     {self.aircon_reset_effectiveness_log_button_format[aircon_name]['service']:
                                                                                                                       self.aircon_reset_effectiveness_log_button_format[aircon_name]['characteristics_properties']}}
-                aircon_homebridge_config[self.aircon_status_format[aircon_name]['name']] = {self.aircon_remote_operation_format[aircon_name]['service_name']:
+                if self.aircon_config[aircon_name]['Room Dampers']:
+                    aircon_homebridge_config[self.aircon_status_format[aircon_name]['name']] = {self.aircon_remote_operation_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_remote_operation_format[aircon_name]['service']:
+                                                                                             self.aircon_remote_operation_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_heat_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_heat_format[aircon_name]['service']:
+                                                                                             self.aircon_heat_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_cool_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_cool_format[aircon_name]['service']:
+                                                                                             self.aircon_cool_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_fan_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_fan_format[aircon_name]['service']:
+                                                                                             self.aircon_fan_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_fan_hi_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_fan_hi_format[aircon_name]['service']:
+                                                                                             self.aircon_fan_hi_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_fan_lo_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_fan_lo_format[aircon_name]['service']:
+                                                                                             self.aircon_fan_lo_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_compressor_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_compressor_format[aircon_name]['service']:
+                                                                                             self.aircon_compressor_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_heating_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_heating_format[aircon_name]['service']:
+                                                                                             self.aircon_heating_format[aircon_name]['characteristics_properties']},
+                                                                                            self.aircon_malfunction_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_malfunction_format[aircon_name]['service']:
+                                                                                             self.aircon_malfunction_format[aircon_name]['characteristics_properties']}}
+                else:
+                    aircon_homebridge_config[self.aircon_status_format[aircon_name]['name']] = {self.aircon_remote_operation_format[aircon_name]['service_name']:
                                                                                             {self.aircon_remote_operation_format[aircon_name]['service']:
                                                                                              self.aircon_remote_operation_format[aircon_name]['characteristics_properties']},
                                                                                             self.aircon_damper_format[aircon_name]['service_name']:
@@ -835,6 +878,15 @@ class HomebridgeClass(object):
                                                                                             self.aircon_malfunction_format[aircon_name]['service_name']:
                                                                                             {self.aircon_malfunction_format[aircon_name]['service']:
                                                                                              self.aircon_malfunction_format[aircon_name]['characteristics_properties']}}
+                aircon_homebridge_config[self.aircon_hi_fan_format[aircon_name]['name']] = {self.aircon_hi_fan_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_hi_fan_format[aircon_name]['service']:
+                                                                                             self.aircon_hi_fan_format[aircon_name]['characteristics_properties']}}
+                aircon_homebridge_config[self.aircon_med_fan_format[aircon_name]['name']] = {self.aircon_med_fan_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_med_fan_format[aircon_name]['service']:
+                                                                                             self.aircon_med_fan_format[aircon_name]['characteristics_properties']}}
+                aircon_homebridge_config[self.aircon_lo_fan_format[aircon_name]['name']] = {self.aircon_lo_fan_format[aircon_name]['service_name']:
+                                                                                            {self.aircon_lo_fan_format[aircon_name]['service']:
+                                                                                             self.aircon_lo_fan_format[aircon_name]['characteristics_properties']}}
                 aircon_thermostat_names = self.aircon_config[aircon_name]['Day Zone'] + self.aircon_config[aircon_name]['Night Zone'] + [self.aircon_config[aircon_name]['Master']]
                 for thermostat in aircon_thermostat_names:
                     aircon_homebridge_config[aircon_name + ' ' + thermostat] = {aircon_name + ' ' + thermostat: {self.aircon_thermostat_format[aircon_name]['service']:
@@ -933,6 +985,9 @@ class HomebridgeClass(object):
                         enviro_monitors_homebridge_config[enviro_monitor + self.enviro_hum_format['name']] = {enviro_monitor + self.enviro_hum_format['service_name']:
                                                                                                               {self.enviro_hum_format['service']:
                                                                                                                self.enviro_hum_format['characteristics_properties']}}
+                        enviro_monitors_homebridge_config[enviro_monitor + self.enviro_dew_format['name']] = {enviro_monitor + self.enviro_dew_format['service_name']:
+                                                                                                              {self.enviro_dew_format['service']:
+                                                                                                               self.enviro_dew_format['characteristics_properties']}}
                         enviro_monitors_homebridge_config[enviro_monitor + self.enviro_lux_format['name']] = {enviro_monitor + self.enviro_lux_format['service_name']:
                                                                                                               {self.enviro_lux_format['service']:
                                                                                                                self.enviro_lux_format['characteristics_properties']}}
@@ -1030,11 +1085,80 @@ class HomebridgeClass(object):
                                                                                  self.main_room_shades_window_shade_format['characteristics_properties']}}
         else:
             main_room_shades_hb_config = {}
+
+        if mgr.enviro_wind_monitors_present:
+            enviro_wind_hb_config = {}
+            enviro_wind_hb_config[self.enviro_wind_format['name']] = {self.enviro_wind_format['service_name']: {self.enviro_wind_format['service']:
+                                                                                                                     self.enviro_wind_format['characteristics_properties']}}
+            enviro_chill_hb_config = {}
+            enviro_chill_hb_config[self.enviro_chill_format['name']] = {self.enviro_chill_format['service_name']: {self.enviro_chill_format['service']:
+                                                                                                                   self.enviro_chill_format['characteristics_properties']}}
+        else:
+            enviro_wind_hb_config = {}
+            enviro_chill_hb_config = {}
+            
+        if mgr.aquarium_monitor_present:
+            aquarium_temp_hb_config = {}
+            aquarium_temp_hb_config[self.aquarium_temp_format['name']] = {self.aquarium_temp_format['service_name']: {self.aquarium_temp_format['service']:
+                                                                                                                   self.aquarium_temp_format['characteristics_properties']}}
+        if mgr.dynalite_homebridge_gateway_present:
+            dynalite_hb_config = {}
+            # The following list is copied from hb_cfg in dynalite homebridge gateway
+            hb_cfg = [{"name":"Living Light","service_name":"Living Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}, "ColorTemperature": {}}},
+              {"name":"Kitchen Light","service_name":"Kitchen Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}, "ColorTemperature": {}}},
+              {"name":"Kitchen Economy Light","service_name":"Kitchen Economy Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}, "ColorTemperature": {}}},
+                      {"name":"Kitchen Light","service_name":"Kitchen Downlights","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}, "ColorTemperature": {}}},
+                      {"name":"Kitchen Light","service_name":"Kitchen Hallway Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}, "ColorTemperature": {}}},
+              {"name":"Kitchen Light","service_name":"Kitchen Ceiling Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}, "ColorTemperature": {}}},
+              {"name":"Kitchen Light","service_name":"Kitchen Pendant Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Kitchen Light","service_name":"Kitchen Cooktop Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Appliance Light","service_name":"Appliance Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Laundry Light","service_name":"Laundry Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Entry Light","service_name":"Entry Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}, "ColorTemperature": {}}},
+              {"name":"Powder Light","service_name":"Powder Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Dining Light","service_name":"Dining Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Dining Light","service_name":"TV Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Dining Light","service_name":"Dining Pendant Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Main Light","service_name":"Main Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Main Light","service_name":"Right Bedside Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Main Light","service_name":"Left Bedside Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Main Bedside Lights","service_name":"Main Bedside Lights","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Main Window","service_name":"Main Window","service_type":"Window", "characteristics_properties": {"TargetPosition": {"minStep": 100}}},
+              {"name":"Main Ensuite Light","service_name":"Main Ensuite Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Main Ensuite Light","service_name":"Main Ensuite Shower Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Main Ensuite Towels","service_name":"Main Ensuite Towels","service_type":"Switch", "characteristics_properties": {}},
+              {"name":"Main Ensuite Floor","service_name":"Main Ensuite Floor","service_type":"Switch", "characteristics_properties": {}},
+              {"name":"Study Light","service_name":"Study Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"South Light","service_name":"South Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"South Robe Light","service_name":"South Robe Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"South Window","service_name":"South Window","service_type":"Window", "characteristics_properties": {"TargetPosition": {"minStep": 100}}},
+              {"name":"South Ensuite Light","service_name":"South Ensuite Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"South Ensuite Towels","service_name":"South Ensuite Towels","service_type":"Switch", "characteristics_properties": {}},
+              {"name":"South Ensuite Floor","service_name":"South Ensuite Floor","service_type":"Switch", "characteristics_properties": {}},
+              {"name":"North Light","service_name":"North Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"North Window","service_name":"North Window","service_type":"Window", "characteristics_properties": {"TargetPosition": {"minStep": 100}}},
+              {"name":"North Ensuite Light","service_name":"North Ensuite Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"North Ensuite Towels","service_name":"North Ensuite Towels","service_type":"Switch", "characteristics_properties": {}},
+              {"name":"North Ensuite Floor","service_name":"North Ensuite Floor","service_type":"Switch", "characteristics_properties": {}},
+              {"name":"Rear Balcony Light","service_name":"Rear Balcony Light","service_type":"Lightbulb", "characteristics_properties": {}},
+              {"name":"Front Balcony Light","service_name":"Front Balcony Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Front Balcony Light","service_name":"South Balcony Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Front Balcony Light","service_name":"North Balcony Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name":"Comms Light","service_name":"Comms Light","service_type":"Lightbulb", "characteristics_properties": {"Brightness": {}}},
+              {"name": "Main Room Shades", "service_name": "Day Fresh", "service_type": "WindowCovering", "characteristics_properties": {"TargetPosition": {"minStep": 10}}},
+              {"name": "Main Ensuite Shutters", "service_name": "Main Ensuite Shutters", "service_type": "WindowCovering", "characteristics_properties": {"TargetPosition": {"minStep": 100}}},
+              {"name": "Study Shutters", "service_name": "Study Shutters", "service_type": "WindowCovering", "characteristics_properties": {"TargetPosition": {"minStep": 100}}},
+              {"name": "South Shutters", "service_name": "South Shutters", "service_type": "WindowCovering", "characteristics_properties": {"TargetPosition": {"minStep": 100}}},
+              {"name": "North Shutters", "service_name": "North Shutters", "service_type": "WindowCovering", "characteristics_properties": {"TargetPosition": {"minStep": 100}}}]
+            for name in hb_cfg:
+                dynalite_hb_config[name["name"]] = {name["service_name"]: {name["service_type"]: name["characteristics_properties"]}}
+        else:
+            dynalite_hb_config = {}            
         # Build entire required_homebridge_config
         required_homebridge_config = {**blinds_homebridge_config, **door_sensors_homebridge_config, **garage_door_homebridge_config, **reboot_homebridge_config, **light_dimmers_homebridge_config,
                                       **aircon_homebridge_config, **doorbell_homebridge_config, **air_purifiers_homebridge_config, **multisensors_homebridge_config, **powerpoints_homebridge_config,
                                       **flood_sensors_homebridge_config, **enviro_monitors_homebridge_config, **ev_charger_homebridge_config, **fan_monitor_homebridge_config, **hm_display_homebridge_config,
-                                      **main_room_shades_hb_config}
+                                      **main_room_shades_hb_config, **enviro_wind_hb_config, **enviro_chill_hb_config, **aquarium_temp_hb_config, **dynalite_hb_config}
         return required_homebridge_config
                     
     def find_incorrect_accessories(self, required_homebridge_config, current_homebridge_config):
@@ -1247,7 +1371,7 @@ class HomebridgeClass(object):
             print("Main Bedroom Shades Button Pressed. Message ignored")
         elif 'Towels' in parsed_json['name'] or 'Floor' in parsed_json['name'] or 'Window' in parsed_json['name'] or 'Shutters' in parsed_json['name']:
             print(parsed_json['name'], "Button Pressed. Message ignored")
-        elif parsed_json['name'] == self.enviro_wind_name:
+        elif parsed_json['name'] == self.enviro_wind_format['name']:
             print("Enviro Wind button pressed. Resetting to previous state")
             self.process_enviro_wind_button()
         else: # Test for aircon buttons and process if true
@@ -1294,12 +1418,24 @@ class HomebridgeClass(object):
     def capture_config(self, parsed_json):
         print("Capture Config", parsed_json)
         del parsed_json['request_id'] # Delete the Request ID
-        self.current_config = {accessory: {service_name: {parsed_json[accessory]['services'][service_name]:
-                                                          parsed_json[accessory]['properties'][service_name]}
-                                           for service_name in parsed_json[accessory]['services']} for accessory in parsed_json}
-        #print("Current Config", current_config)
+        current_config = {}
+        for accessory in parsed_json:
+            #print ("Accessory", accessory)
+            service_name_config = {}
+            services_config = {}
+            for service_name in parsed_json[accessory]['services']:
+                #print ("Service Name", service_name)
+                if service_name in parsed_json[accessory]['properties']:
+                    services_config[parsed_json[accessory]['services'][service_name]] = parsed_json[accessory]['properties'][service_name]
+                    #print("Services Config", services_config)
+                    service_name_config[service_name] = services_config
+                else:
+                    print ("No Properties for", service_name, "in", accessory, "accessory")
+            #print("Service Name Config", service_name_config)
+            current_config[accessory] = service_name_config
+        #current_config = {accessory: {service_name: {parsed_json[accessory]['services'][service_name]: parsed_json[accessory]['properties'][service_name]} for service_name in parsed_json[accessory]['services']} for accessory in parsed_json}
         self.current_config = current_config
-
+        
     def adjust_light_dimmer(self, parsed_json):
         # Determine which dimmer needs to be adjusted and call the relevant dimmer object method
         # that then calls the Domoticz method to adjust the dimmer brightness or state
@@ -1541,7 +1677,7 @@ class HomebridgeClass(object):
     def process_enviro_wind_button(self): #Reset to previous state
         time.sleep(0.5)
         homebridge_json = {}
-        homebridge_json['name'] = self.enviro_wind_name
+        homebridge_json['name'] = self.enviro_wind_format['name']
         homebridge_json['characteristic'] = 'On'
         homebridge_json['value'] = self.enviro_wind_state['Active']
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
@@ -2280,6 +2416,11 @@ class HomebridgeClass(object):
             homebridge_json['characteristic'] = 'CurrentRelativeHumidity'
             homebridge_json['value'] = parsed_json['Hum'][0]
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+            homebridge_json['name'] = name + self.enviro_dew_format['name']
+            homebridge_json['service_name'] = name + self.enviro_dew_format['service_name']
+            homebridge_json['characteristic'] = 'CurrentTemperature'
+            homebridge_json['value'] = parsed_json['Dew']
+            client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
             homebridge_json['name'] = name + self.enviro_lux_format['name']
             homebridge_json['service_name'] = name + self.enviro_lux_format['service_name']
             homebridge_json['characteristic'] = 'CurrentAmbientLightLevel'
@@ -2291,21 +2432,26 @@ class HomebridgeClass(object):
             
     def reset_enviro_wind(self):
         homebridge_json = {}
-        homebridge_json['name'] = self.enviro_wind_name
+        homebridge_json['name'] = self.enviro_wind_format['name']
         homebridge_json['characteristic'] = 'On'
         homebridge_json['value'] = False
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         self.enviro_wind_state['Active'] = False
+        homebridge_json['name'] = self.enviro_chill_format['name']
+        homebridge_json['characteristic'] = 'CurrentTemperature'
+        homebridge_json['value'] = 0
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        
     
     def update_enviro_wind(self, wind_data):
         homebridge_json = {}
-        homebridge_json['name'] = self.enviro_wind_name
+        homebridge_json['name'] = self.enviro_wind_format['name']
         if not self.enviro_wind_state['Active']:
             homebridge_json['characteristic'] = 'On'
             homebridge_json['value'] = True
             client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
             self.enviro_wind_state['Active'] = True
-        self.enviro_wind_state['Wind Speed'] = wind_data['Gust Delta'] * 2070/mgr.enviro_wind_distance #Convert air pressure delta to km/h
+        self.enviro_wind_state['Wind Speed'] = round(wind_data['Gust km/h'])
         if self.enviro_wind_state['Wind Speed'] > 100:
             self.enviro_wind_state['Wind Speed'] = 100 #Limit wind speed to 100km/h
         if wind_data['Direction'] == 'S' or wind_data['Direction'] == 'E':
@@ -2317,7 +2463,18 @@ class HomebridgeClass(object):
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         homebridge_json['characteristic'] = 'RotationSpeed'
         homebridge_json['value'] = self.enviro_wind_state['Wind Speed']
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))   
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        homebridge_json['name'] = self.enviro_chill_format['name']
+        homebridge_json['characteristic'] = 'CurrentTemperature'
+        homebridge_json['value'] = wind_data['Chill']
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+        
+    def update_aquarium_temp(self, temp):
+        homebridge_json = {}
+        homebridge_json['name'] = self.aquarium_temp_format['name']
+        homebridge_json['characteristic'] = 'CurrentTemperature'
+        homebridge_json['value'] = temp
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         
     def update_ev_charger_state(self, state):
         homebridge_json = {}
@@ -2410,7 +2567,8 @@ class DomoticzClass(object): # Manages communications to and from the z-wave obj
         self.aircon_thermostat_label = ' Thermostat'
         self.aircon_sensor_names_idx = {'Aircon': {'Living': {'Active': 683, 'Temperature': 675}, 'Kitchen': {'Active': 684, 'Temperature': 678}, 'Study': {'Active': 685, 'Temperature': 679}, 'Main': {'Active': 686, 'Temperature': 680}, 'South': {'Active': 687, 'Temperature': 681}, 'North': {'Active': 688, 'Temperature': 682}}}
         self.aircon_sensor_enable_map = {'Off': 0, 'Heat': 1, 'Cool': 1}
-        self.aircon_status_idx = {'Aircon': {'Mode':{'idx': 695, 'Off': '0', 'Fan': '10', 'Heat': '20', 'Cool': '30'}, 'Damper': 696}}
+        #self.aircon_status_idx = {'Aircon': {'Mode':{'idx': 695, 'Off': '0', 'Fan': '10', 'Heat': '20', 'Cool': '30'}, 'Damper': 696}}
+        self.aircon_status_idx = {'Aircon': {'Fan': 1058, 'Cool': 1059, 'Heat': 1060}}
         self.aircon_mode = {'Aircon': {'idx': 693, 'Off': '0', 'Heat': '10', 'Cool': '20'}}
         # Set up dimmer domoticz message formats
         self.dimmer_brightness_format = {'command': 'switchlight', 'switchcmd': 'Set Level'}
@@ -2571,28 +2729,34 @@ class DomoticzClass(object): # Manages communications to and from the z-wave obj
 
     def update_aircon_status(self, aircon_name, status_item, state):
         #print ('Domoticz: Update Aircon Status', status_item, state)
-        domoticz_json = {}
-        publish = False
-        if status_item == 'Damper':
-            domoticz_json['idx'] = self.aircon_status_idx[aircon_name]['Damper']
-            domoticz_json['nvalue'] = 0
-            domoticz_json['svalue'] = str(state)
-            publish = True
-        else:
-            domoticz_json['idx'] = self.aircon_status_idx[aircon_name]['Mode']['idx']
-            if status_item == 'Remote Operation' and state == False:
-                domoticz_json['svalue'] = self.aircon_status_idx[aircon_name]['Mode']['Off']
-                publish = True
-            elif status_item == 'Heat' and state:
-                domoticz_json['svalue'] = self.aircon_status_idx[aircon_name]['Mode']['Heat']
-                publish = True
-            elif status_item == 'Cool' and state:
-                domoticz_json['svalue'] = self.aircon_status_idx[aircon_name]['Mode']['Cool']
-                publish = True
-            elif status_item == 'Fan' and state:
-                domoticz_json['svalue'] = self.aircon_status_idx[aircon_name]['Mode']['Fan']
-                publish = True
-        if publish:
+        #domoticz_json = {}
+        #publish = False
+        #if status_item == 'Damper':
+            #domoticz_json['idx'] = self.aircon_status_idx[aircon_name]['Damper']
+            #domoticz_json['nvalue'] = 0
+            #domoticz_json['svalue'] = str(state)
+            #publish = True
+        #else:
+            #domoticz_json['idx'] = self.aircon_status_idx[aircon_name]['Mode']['idx']
+            #if status_item == 'Remote Operation' and state == False:
+                #domoticz_json['svalue'] = self.aircon_status_idx[aircon_name]['Mode']['Off']
+                #publish = True
+            #elif status_item == 'Heat' and state:
+                #domoticz_json['svalue'] = self.aircon_status_idx[aircon_name]['Mode']['Heat']
+                #publish = True
+            #elif status_item == 'Cool' and state:
+                #domoticz_json['svalue'] = self.aircon_status_idx[aircon_name]['Mode']['Cool']
+                #publish = True
+            #elif status_item == 'Fan' and state:
+                #domoticz_json['svalue'] = self.aircon_status_idx[aircon_name]['Mode']['Fan']
+                #publish = True
+        if status_item in self.aircon_status_idx[aircon_name]:
+            domoticz_json = self.dimmer_switch_format
+            domoticz_json['idx'] = self.aircon_status_idx[aircon_name][status_item]
+            if state:
+                domoticz_json['switchcmd'] = "On"
+            else:
+                domoticz_json['switchcmd'] = "Off"
             client.publish(self.outgoing_mqtt_topic, json.dumps(domoticz_json))
 
     def update_blueair_aqi(self, name, part_2_5, co2, voc, max_aqi):
@@ -2665,9 +2829,9 @@ class DomoticzClass(object): # Manages communications to and from the z-wave obj
             if 'Wind' in parsed_json:
                 if parsed_json['Wind'] != {}:
                     wind_data = parsed_json['Wind']
-                    wind_speed = round(wind_data['Delta'] * 5750/mgr.enviro_wind_distance) #Domoticz requires wind speed in m/sec * 10
-                    wind_gust = round(wind_data['Gust Delta'] * 5750/mgr.enviro_wind_distance) #Domoticz requires wind speed in m/sec * 10
-                    wind_chill = round(13.12 + 0.6215 * non_aqi_message['Temp'] - 11.37 * pow(wind_gust * 3.6, 0.16) + 0.3965 * non_aqi_message['Temp'] * pow(wind_gust * 3.6, 0.16), 1)
+                    wind_speed = wind_data['m/s'] * 10 #Domoticz requires wind speed in m/sec * 10
+                    wind_gust = wind_data['Gust m/s'] * 10 #Domoticz requires wind speed in m/sec * 10
+                    wind_chill = wind_data['Chill']
                     domoticz_json = {}
                     domoticz_json['idx'] = enviro_config['Device IDs']['Wind']
                     domoticz_json['nvalue'] = 0
@@ -2685,12 +2849,13 @@ class FloodSensorClass(object):
 
     def process_flood_state_change(self, parsed_json):
         #print(parsed_json)
-        flood_value =  int(parsed_json['svalue1'])
+        #flood_value =  int(parsed_json['svalue1'])
+        self.flooding = parsed_json['nvalue'] # 1 for flooding and 0 for not flooding
         battery_value = int(parsed_json['Battery'])
-        if flood_value == 255:
-            self.flooding = 1 # Indicates that there is flooding
-        else:
-            self.flooding = 0 # Indicates that there is no flooding
+        #if flood_value == 255:
+            #self.flooding = 1 # Indicates that there is flooding
+        #else:
+            #self.flooding = 0 # Indicates that there is no flooding
         if battery_value < 20: # Check if the battery level is less than 20%
             self.low_battery = 1 # Battery low flag
         else:
@@ -2732,12 +2897,14 @@ class DoorSensorClass(object):
             self.doorbell_door = False
         
     def process_door_state_change(self, parsed_json):
-        door_opened_value =  int(parsed_json['svalue1'])
+        #door_opened_value =  int(parsed_json['svalue1'])
+        door_opened_value =  parsed_json['nvalue']
         battery_value = int(parsed_json['Battery'])
         #print('Door State Change', self.door)
         #print('door_opened_value', door_opened_value)
         #print('battery_value', battery_value)
-        if door_opened_value == 255:
+        #if door_opened_value == 255:
+        if door_opened_value == 1:
             self.current_door_opened = True # Indicates that the door is open
         else:
             self.current_door_opened = False # Indicates that the door is closed
@@ -3668,18 +3835,18 @@ class AirconClass(object):
         self.aircon_seasons_months = {'January': 'Summer', 'February': 'Summer', 'March': 'Summer', 'April': 'Spring', 'May': 'Spring', 'June': 'Winter',
                                       'July': 'Winter', 'August': 'Winter', 'September': 'Spring', 'October': 'Spring', 'November': 'Summer',
                                       'December': 'Summer'}
-        self.aircon_weekday_power_rates = {'Summer': {0:{'name': 'EV', 'rate': 0.0749, 'stop_hour': 3}, 4:{'name': 'off_peak1', 'rate': 0.1499, 'stop_hour': 6},
-                                                      7:{'name':'shoulder1', 'rate': 0.22, 'stop_hour': 13}, 14:{'name':'peak', 'rate': 0.3960, 'stop_hour': 19},
-                                                      20: {'name': 'shoulder2', 'rate': 0.22, 'stop_hour': 21}, 22:{'name': 'off_peak2', 'rate': 0.1499, 'stop_hour': 23}},
-                                           'Autumn': {0:{'name': 'EV', 'rate': 0.0749, 'stop_hour': 3}, 4:{'name': 'off_peak1', 'rate': 0.1499, 'stop_hour': 6},
-                                                      7:{'name':'shoulder', 'rate': 0.22, 'stop_hour': 21}, 22:{'name': 'off_peak2', 'rate': 0.1499, 'stop_hour': 23}},
-                                           'Winter': {0:{'name': 'EV', 'rate': 0.0749, 'stop_hour': 3}, 4:{'name': 'off_peak1', 'rate': 0.1499, 'stop_hour': 6},
-                                                      7:{'name':'shoulder1', 'rate': 0.22, 'stop_hour': 16}, 17:{'name':'peak', 'rate': 0.3960, 'stop_hour': 20},
-                                                      21: {'name': 'shoulder2', 'rate': 0.22, 'stop_hour': 21}, 22:{'name': 'off_peak2', 'rate': 0.1499, 'stop_hour': 23}},
-                                           'Spring': {0:{'name': 'EV', 'rate': 0.0749, 'stop_hour': 3}, 4:{'name': 'off_peak1', 'rate': 0.1499, 'stop_hour': 6},
-                                                      7:{'name':'shoulder', 'rate': 0.22, 'stop_hour': 21}, 22:{'name': 'off_peak2', 'rate': 0.1499, 'stop_hour': 23}}}
-        self.aircon_weekend_power_rates = {0:{'name': 'off_peak1', 'rate': 0.1499, 'stop_hour': 6}, 7:{'name':'shoulder', 'rate': 0.22, 'stop_hour': 21},
-                              22:{'name': 'off_peak2', 'rate': 0.1499, 'stop_hour': 23}}
+        self.aircon_weekday_power_rates = {'Summer': {0:{'name': 'EV', 'rate': 0.0959, 'stop_hour': 3}, 4:{'name': 'off_peak1', 'rate': 0.1918, 'stop_hour': 6},
+                                                      7:{'name':'shoulder1', 'rate': 0.2815, 'stop_hour': 13}, 14:{'name':'peak', 'rate': 0.5068, 'stop_hour': 19},
+                                                      20: {'name': 'shoulder2', 'rate': 0.2815, 'stop_hour': 21}, 22:{'name': 'off_peak2', 'rate': 0.1918, 'stop_hour': 23}},
+                                           'Autumn': {0:{'name': 'EV', 'rate': 0.0959, 'stop_hour': 3}, 4:{'name': 'off_peak1', 'rate': 0.1918, 'stop_hour': 6},
+                                                      7:{'name':'shoulder', 'rate': 0.2815, 'stop_hour': 21}, 22:{'name': 'off_peak2', 'rate': 0.1918, 'stop_hour': 23}},
+                                           'Winter': {0:{'name': 'EV', 'rate': 0.0959, 'stop_hour': 3}, 4:{'name': 'off_peak1', 'rate': 0.1918, 'stop_hour': 6},
+                                                      7:{'name':'shoulder1', 'rate': 0.2815, 'stop_hour': 16}, 17:{'name':'peak', 'rate': 0.5068, 'stop_hour': 20},
+                                                      21: {'name': 'shoulder2', 'rate': 0.2815, 'stop_hour': 21}, 22:{'name': 'off_peak2', 'rate': 0.1918, 'stop_hour': 23}},
+                                           'Spring': {0:{'name': 'EV', 'rate': 0.0959, 'stop_hour': 3}, 4:{'name': 'off_peak1', 'rate': 0.1918, 'stop_hour': 6},
+                                                      7:{'name':'shoulder', 'rate': 0.2815, 'stop_hour': 21}, 22:{'name': 'off_peak2', 'rate': 0.1918, 'stop_hour': 23}}}
+        self.aircon_weekend_power_rates = {0:{'name': 'off_peak1', 'rate': 0.1918, 'stop_hour': 6}, 7:{'name':'shoulder', 'rate': 0.2815, 'stop_hour': 21},
+                              22:{'name': 'off_peak2', 'rate': 0.1918, 'stop_hour': 23}}
         self.aircon_running_costs = {'total_cost':0, 'total_hours': 0}
         self.log_aircon_cost_data = log_aircon_cost_data
         self.no_valid_active_temp_printed = False # Allow one printout when no valid active temp is set
@@ -3875,7 +4042,7 @@ class AirconClass(object):
                     print(self.name, status_item, 'changed from', self.status[status_item], 'to', parsed_json[status_item])
                     self.status[status_item] = parsed_json[status_item]
                     homebridge.update_aircon_status(self.name, status_item, self.status, self.settings)
-                    #domoticz.update_aircon_status(self.name, status_item, self.status[status_item])
+                    domoticz.update_aircon_status(self.name, status_item, self.status[status_item])
             if 'Room Damper States' in parsed_json: # Update Room Damper status if equipped
                 #print("Room Damper Update", parsed_json['Room Damper States'], self.room_damper_states)
                 if parsed_json['Room Damper States'] != {}:
@@ -5011,7 +5178,7 @@ class EnviroClass(object):
         self.name = name
         self.valid_enviro_aqi_readings = ['P1', 'P2.5', 'P10', 'Red', 'Oxi', 'NH3', 'CO2', 'VOC']
         self.valid_enviro_aqi_readings_no_gas = ['P1', 'P2.5', 'P10', 'CO2', 'VOC']
-        self.valid_enviro_non_aqi_readings = ['Temp', 'Hum', 'Bar', 'Lux', 'Noise']
+        self.valid_enviro_non_aqi_readings = ['Temp', 'Hum', 'Dew', 'Bar', 'Lux', 'Noise']
         self.valid_luftdaten_readings = ['P2.5', 'P10']
         self.air_reading_bands = {'P1':[0, 6, 17, 27, 35], 'P2.5':[0, 11, 35, 53, 70], 'P10': [0, 16, 50, 75, 100],
                                   'NH3': [0, 6, 2, 10, 15], 'Red': [0, 6, 10, 50, 75], 'Oxi': [0, 0.2, 0.4, 0.8, 1],
@@ -5097,7 +5264,7 @@ class EnviroClass(object):
                     pass # Ignore other readings
             #print(self.name, 'Air Quality Update. Overall AQI:', self.max_aqi, 'Individual AQI:', individual_aqi)
             if self.name in mgr.enviro_wind_config:
-                print("Calculating Domoticz Wind for", self.name, "with a reading of", domoticz_data['Bar'][0], "hPa and an offset of", mgr.enviro_wind_config[self.name]['Offset'], "hPa")
+                #print("Calculating Domoticz Wind for", self.name, "with a reading of", domoticz_data['Bar'][0], "hPa and an offset of", mgr.enviro_wind_config[self.name]['Offset'], "hPa")
                 mgr.enviro_wind_config[self.name]['Air Pressure'] = domoticz_data['Bar'][0] + mgr.enviro_wind_config[self.name]['Offset']
                 if mgr.previous_enviro_wind_source != self.name and mgr.previous_enviro_wind_source != None: #Ensure that there are readings from two sources
                     valid_wind_reading = True
@@ -5106,45 +5273,46 @@ class EnviroClass(object):
                     print("No valid wind reading received")
                 mgr.previous_enviro_wind_source = self.name
                 if valid_wind_reading:
-                    wind_data = {'Orientation': '', 'Delta': 0, 'Current Delta': 0, 'Gust Delta': 0, 'Direction': '', 'Bearing': None}
+                    wind_data = {'Gust km/h': 0, 'm/s': 0, 'Gust m/s': 0, 'Chill': 0, 'Direction': '', 'Bearing': 0}
+                    current_air_pressure_delta = 0
                     valid_orientation = True
                     for enviro in mgr.enviro_wind_config:
                         if mgr.enviro_wind_config[enviro]['Direction'] == 'West':
-                            wind_data['Orientation'] = 'East West'
-                            wind_data['Current Delta'] = wind_data['Current Delta'] - mgr.enviro_wind_config[enviro]['Air Pressure']
+                            enviro_orientation = 'East West'
+                            current_air_pressure_delta = current_air_pressure_delta - mgr.enviro_wind_config[enviro]['Air Pressure']
                         elif mgr.enviro_wind_config[enviro]['Direction'] == 'East':
-                            wind_data['Orientation'] = 'East West'
-                            wind_data['Current Delta'] = wind_data['Current Delta'] + mgr.enviro_wind_config[enviro]['Air Pressure']
+                            enviro_orientation = 'East West'
+                            current_air_pressure_delta = current_air_pressure_delta + mgr.enviro_wind_config[enviro]['Air Pressure']
                         elif mgr.enviro_wind_config[enviro]['Direction'] == 'North':
-                            wind_data['Orientation'] = 'North South'
-                            wind_data['Current Delta'] = wind_data['Current Delta'] - mgr.enviro_wind_config[enviro]['Air Pressure']
+                            enviro_orientation = 'North South'
+                            current_air_pressure_delta = current_air_pressure_delta - mgr.enviro_wind_config[enviro]['Air Pressure']
                         elif mgr.enviro_wind_config[enviro]['Direction'] == 'South':
-                            wind_data['Orientation'] = 'North South'
-                            wind_data['Current Delta'] = wind_data['Current Delta'] + mgr.enviro_wind_config[enviro]['Air Pressure']
+                            enviro_orientation = 'North South'
+                            current_air_pressure_delta = current_air_pressure_delta + mgr.enviro_wind_config[enviro]['Air Pressure']
                         else:
                             valid_orientation = False
                     if valid_orientation:
-                        if wind_data['Orientation'] == 'East West':
-                            if wind_data['Current Delta'] >= 0:
+                        if enviro_orientation == 'East West':
+                            if current_air_pressure_delta >= 0:
                                 wind_data['Direction'] = 'E'
                                 wind_data['Bearing'] = '90'
                             else:
                                 wind_data['Direction'] = 'W'
                                 wind_data['Bearing'] = '270'
                         else:
-                            if wind_data['Current Delta'] >= 0:
+                            if current_air_pressure_delta >= 0:
                                 wind_data['Direction'] = 'N'
                                 wind_data['Bearing'] = '0'
                             else:
                                 wind_data['Direction'] = 'S'
                                 wind_data['Bearing'] = '180'
-                        wind_data['Current Delta'] = round(wind_data['Current Delta'], 2)
-                        #print("Current Delta", wind_data['Current Delta'])
+                        current_air_pressure_delta = round(current_air_pressure_delta, 2)
+                        #print("Current Delta", current_air_pressure_delta)
                 if valid_wind_reading and valid_orientation:
                     # Calculate mean wind over ten measurements, calulate the mean and the highest reading for the gust level
                     for pointer in range(9, 0, -1): # Move previous temperatures one position in the list to prepare for new temperature to be recorded 
                         mgr.enviro_wind_results[pointer] = mgr.enviro_wind_results[pointer - 1]
-                    mgr.enviro_wind_results[0] = abs(wind_data['Current Delta'])
+                    mgr.enviro_wind_results[0] = abs(current_air_pressure_delta)
                     valid_reading_count = 0
                     for pointer in range(0, 10):
                         if mgr.enviro_wind_results[pointer] != None:
@@ -5153,10 +5321,14 @@ class EnviroClass(object):
                     reading_sum = 0
                     for pointer in range(0, valid_reading_count):
                         reading_sum = reading_sum + mgr.enviro_wind_results[pointer]
-                    wind_data['Delta'] = round(reading_sum/valid_reading_count, 3)
-                    wind_data['Gust Delta'] = max(mgr.enviro_wind_results[0:valid_reading_count]) #Replace latest wind reading with maximum over the reporting period for the Gust reading
-                    print("Enviro Wind Results", mgr.enviro_wind_results)
-                    print("Wind Data", wind_data)
+                    air_pressure_delta = round(reading_sum/valid_reading_count, 3)
+                    gust_air_pressure_delta = max(mgr.enviro_wind_results[0:valid_reading_count]) #Replace latest wind reading with maximum over the reporting period for the Gust reading
+                    #print("Enviro Wind Results", mgr.enviro_wind_results)
+                    wind_data['Gust km/h'] = round(gust_air_pressure_delta * 2070 / mgr.enviro_wind_distance, 1) #Convert air pressure delta to km/h
+                    wind_data['m/s'] = round(air_pressure_delta * 575 / mgr.enviro_wind_distance, 1) #Convert air pressure delta to m/s
+                    wind_data['Gust m/s'] = round(gust_air_pressure_delta * 575 / mgr.enviro_wind_distance, 1)
+                    wind_data['Chill'] = round(13.12 + 0.6215 * parsed_json['Temp'] - 11.37 * pow(wind_data['Gust km/h'], 0.16) + 0.3965 * parsed_json['Temp'] * pow(wind_data['Gust km/h'], 0.16), 1)
+                    #print("Wind Data", wind_data)
                     domoticz_data['Wind'] = wind_data
                     homebridge.update_enviro_wind(wind_data)
             domoticz.update_enviro_aqi(self.name, self.enviro_config, self.max_aqi, domoticz_data)
