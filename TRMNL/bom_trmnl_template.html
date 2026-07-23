@@ -1,0 +1,142 @@
+<!-- TRMNL Plugin Template -->
+<!-- Paste this into the Markup field of your TRMNL Private Plugin -->
+<style>* { margin: 0; padding: 0; box-sizing: border-box; } body { font-family: sans-serif; background: #fff; color: #000; width: 800px; height: 480px; overflow: hidden; } .page { padding: 16px 20px 12px; display: flex; flex-direction: column; height: 100%; } .header { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #000; padding-bottom: 6px; margin-bottom: 10px; flex-shrink: 0; } .header-title { font-size: 20px; font-weight: bold; letter-spacing: 0.04em; text-transform: uppercase; } .header-updated { font-size: 12px; color: #555; } .body { display: flex; gap: 16px; flex: 1; min-height: 0; } .left { flex: 1; display: flex; flex-direction: column; min-width: 0; } .current { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 10px; flex-shrink: 0; } .current-temp { font-size: 64px; font-weight: 900; line-height: 1; white-space: nowrap; } .current-temp sup { font-size: 28px; font-weight: 400; vertical-align: super; } .current-detail { display: flex; flex-direction: column; gap: 3px; flex: 1; padding-top: 6px; } .current-desc { font-size: 16px; font-weight: bold; } .current-meta { font-size: 12px; color: #444; } .rain-badge { text-align: center; border: 2px solid #000; border-radius: 6px; padding: 5px 10px; white-space: nowrap; flex-shrink: 0; } .rain-badge-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: #666; } .rain-badge-value { font-size: 20px; font-weight: 900; line-height: 1.2; } .rain-badge-unit { font-size: 10px; } .section-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: #666; margin-bottom: 6px; flex-shrink: 0; } .forecast { display: flex; gap: 5px; flex: 0 0 82px; min-height: 0; } .forecast-col { flex: 1; border: 1px solid #000; border-radius: 5px; display: flex; flex-direction: column; align-items: center; padding: 6px 2px 5px; } .forecast-hour { font-size: 11px; color: #555; margin-bottom: 3px; } .forecast-temp { font-size: 14px; font-weight: bold; margin-bottom: 2px; } .forecast-chance { font-size: 12px; } .forecast-chance.high { font-weight: bold; } .forecast-amt { font-size: 10px; color: #555; margin-bottom: 2px; min-height: 12px; } .forecast-bar-wrap { width: 88%; background: #eee; border-radius: 2px; height: 5px; margin-top: auto; overflow: hidden; } .forecast-bar { height: 100%; background: #000; border-radius: 2px; } .cal-section { flex: 1; display: flex; flex-direction: column; min-height: 0; margin-top: 8px; overflow: hidden; } .cal-row { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; } .cal-time { font-size: 11px; color: #555; white-space: nowrap; flex-shrink: 0; min-width: 45px; } .cal-title { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .cal-empty { font-size: 12px; color: #999; font-style: italic; } .right { width: 210px; flex-shrink: 0; border-left: 1px solid #000; padding-left: 14px; display: flex; flex-direction: column; } .sensor-section { margin-bottom: 6px; } .sensor-heading { font-size: 9px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.1em; color: #555; border-bottom: 1px solid #000; padding-bottom: 3px; margin-bottom: 4px; } .sensor-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; } .sensor-name { font-size: 11px; color: #555; } .sensor-val { font-size: 12px; font-weight: 700; } .footer { border-top: 1px solid #000; margin-top: 4px; padding-top: 4px; display: flex; align-items: flex-start; flex-shrink: 0; }
+.footer-block { display: flex; flex-direction: column; align-items: center; flex: 0 0 90px; min-width: 0; padding-top: 3px; }
+.footer-lbl { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: #777; margin-bottom: 1px; }
+.footer-val { font-size: 15px; font-weight: bold; }
+.footer-sep { width: 1px; height: 40px; background: #000; margin: 0 6px; flex-shrink: 0; }
+.elec-block { flex: 1; display: flex; flex-direction: column; align-items: center; min-width: 0; }
+.elec-heading { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: #777; margin-bottom: 4px; }
+.elec-cols { display: flex; gap: 10px; align-items: flex-start; }
+.elec-col { display: flex; flex-direction: column; align-items: center; }
+.elec-col-sep { width: 1px; height: 28px; background: #000; align-self: center; margin: 0 4px; }
+.elec-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #777; white-space: nowrap; }
+.elec-val { font-size: 15px; font-weight: bold; white-space: nowrap; text-transform: none; }
+</style>
+<div class="page">
+    <div class="header">
+        <span class="header-title">Northcliff Today</span>
+        <span class="header-updated">Updated {{updated}}</span>
+    </div>
+    <div class="body">
+        <div class="left">
+            <div class="current">
+                <div class="current-temp">{{current_temp}}<sup>&deg;</sup></div>
+                <div class="current-detail">
+                    <div class="current-desc">{{description}}</div>
+                    <div class="current-meta">Feels like {{feels_like}}&deg;C</div>
+                    <div class="current-meta">Wind {{wind}}</div>
+                    <div class="current-meta">Humidity {{humidity}}%</div>
+                </div>
+                <div class="rain-badge">
+                    <div class="rain-badge-label">Rain since 9am</div>
+                    <div class="rain-badge-value">{{rain_since_9am}}<span class="rain-badge-unit"> mm</span></div>
+                </div>
+            </div>
+            <div class="section-label">Hourly Rain Forecast</div>
+            <div class="forecast">
+                <div class="forecast-col">
+                    <div class="forecast-hour">{{h0_label}}</div>
+                    <div class="forecast-temp">{{h0_temp}}&deg;</div>
+                    <div class="forecast-chance">{{h0_chance}}%</div>
+                    <div class="forecast-amt">{% unless h0_amount == "0" %}{{h0_amount}} mm{% endunless %}</div>
+                    <div class="forecast-bar-wrap"><div class="forecast-bar" style="width:{{h0_chance}}%"></div></div>
+                </div>
+                <div class="forecast-col">
+                    <div class="forecast-hour">{{h1_label}}</div>
+                    <div class="forecast-temp">{{h1_temp}}&deg;</div>
+                    <div class="forecast-chance">{{h1_chance}}%</div>
+                    <div class="forecast-amt">{% unless h1_amount == "0" %}{{h1_amount}} mm{% endunless %}</div>
+                    <div class="forecast-bar-wrap"><div class="forecast-bar" style="width:{{h1_chance}}%"></div></div>
+                </div>
+                <div class="forecast-col">
+                    <div class="forecast-hour">{{h2_label}}</div>
+                    <div class="forecast-temp">{{h2_temp}}&deg;</div>
+                    <div class="forecast-chance">{{h2_chance}}%</div>
+                    <div class="forecast-amt">{% unless h2_amount == "0" %}{{h2_amount}} mm{% endunless %}</div>
+                    <div class="forecast-bar-wrap"><div class="forecast-bar" style="width:{{h2_chance}}%"></div></div>
+                </div>
+                <div class="forecast-col">
+                    <div class="forecast-hour">{{h3_label}}</div>
+                    <div class="forecast-temp">{{h3_temp}}&deg;</div>
+                    <div class="forecast-chance">{{h3_chance}}%</div>
+                    <div class="forecast-amt">{% unless h3_amount == "0" %}{{h3_amount}} mm{% endunless %}</div>
+                    <div class="forecast-bar-wrap"><div class="forecast-bar" style="width:{{h3_chance}}%"></div></div>
+                </div>
+                <div class="forecast-col">
+                    <div class="forecast-hour">{{h4_label}}</div>
+                    <div class="forecast-temp">{{h4_temp}}&deg;</div>
+                    <div class="forecast-chance">{{h4_chance}}%</div>
+                    <div class="forecast-amt">{% unless h4_amount == "0" %}{{h4_amount}} mm{% endunless %}</div>
+                    <div class="forecast-bar-wrap"><div class="forecast-bar" style="width:{{h4_chance}}%"></div></div>
+                </div>
+                <div class="forecast-col">
+                    <div class="forecast-hour">{{h5_label}}</div>
+                    <div class="forecast-temp">{{h5_temp}}&deg;</div>
+                    <div class="forecast-chance">{{h5_chance}}%</div>
+                    <div class="forecast-amt">{% unless h5_amount == "0" %}{{h5_amount}} mm{% endunless %}</div>
+                    <div class="forecast-bar-wrap"><div class="forecast-bar" style="width:{{h5_chance}}%"></div></div>
+                </div>
+            </div>
+            <div class="section-label" style="margin-top:8px;">Today's Events</div>
+            <div class="cal-section">
+                <div class="cal-row"><span class="cal-time">{{cal_0_time}}</span><span class="cal-title">{{cal_0_title}}</span></div>
+                <div class="cal-row"><span class="cal-time">{{cal_1_time}}</span><span class="cal-title">{{cal_1_title}}</span></div>
+                <div class="cal-row"><span class="cal-time">{{cal_2_time}}</span><span class="cal-title">{{cal_2_title}}</span></div>
+                <div class="cal-row"><span class="cal-time">{{cal_3_time}}</span><span class="cal-title">{{cal_3_title}}</span></div>
+                <div class="cal-row"><span class="cal-time">{{cal_4_time}}</span><span class="cal-title">{{cal_4_title}}</span></div>
+            </div>
+        </div>
+        <div class="right">
+            <div class="sensor-section">
+                <div class="sensor-heading">Front Balcony</div>
+                <div class="sensor-row"><span class="sensor-name">Temp</span><span class="sensor-val">{{front_balcony_temp}}&deg;C</span></div>
+                <div class="sensor-row"><span class="sensor-name">Humidity</span><span class="sensor-val">{{front_balcony_humidity}}%</span></div>
+                <div class="sensor-row"><span class="sensor-name">Dew Point</span><span class="sensor-val">{{front_balcony_dewpoint}}&deg;C</span></div>
+                <div class="sensor-row"><span class="sensor-name">Barometer</span><span class="sensor-val">{{front_balcony_barometer}} hPa</span></div>
+                <div class="sensor-row"><span class="sensor-name">PM2.5</span><span class="sensor-val">{{front_balcony_pm25}} &micro;g/m&sup3;</span></div>
+            </div>
+            <div class="sensor-section">
+                <div class="sensor-heading">Rear Balcony</div>
+                <div class="sensor-row"><span class="sensor-name">Temp</span><span class="sensor-val">{{rear_balcony_temp}}&deg;C</span></div>
+                <div class="sensor-row"><span class="sensor-name">Humidity</span><span class="sensor-val">{{rear_balcony_humidity}}%</span></div>
+                <div class="sensor-row"><span class="sensor-name">Dew Point</span><span class="sensor-val">{{rear_balcony_dewpoint}}&deg;C</span></div>
+                <div class="sensor-row"><span class="sensor-name">Local Wind</span><span class="sensor-val">{{rear_balcony_wind}}</span></div>
+                <div class="sensor-row"><span class="sensor-name">PM2.5</span><span class="sensor-val">{{rear_balcony_pm25}} &micro;g/m&sup3;</span></div>
+            </div>
+            <div class="sensor-section">
+                <div class="sensor-heading">Kitchen</div>
+                <div class="sensor-row"><span class="sensor-name">Temp</span><span class="sensor-val">{{kitchen_temp}}&deg;C</span></div>
+                <div class="sensor-row"><span class="sensor-name">Humidity</span><span class="sensor-val">{{kitchen_humidity}}%</span></div>
+                <div class="sensor-row"><span class="sensor-name">Dew Point</span><span class="sensor-val">{{kitchen_dewpoint}}&deg;C</span></div>
+                <div class="sensor-row"><span class="sensor-name">PM2.5</span><span class="sensor-val">{{kitchen_pm25}} &micro;g/m&sup3;</span></div>
+            </div>
+        </div>
+    </div>
+    <div class="footer">
+        <div class="footer-block">
+            <span class="footer-lbl">Sunrise</span>
+            <span class="footer-val">{{sunrise}}</span>
+        </div>
+        <div class="footer-sep"></div>
+        <div class="footer-block">
+            <span class="footer-lbl">Sunset</span>
+            <span class="footer-val">{{sunset}}</span>
+        </div>
+        <div class="footer-sep"></div>
+        <div class="elec-block">
+            <div class="elec-heading">Electricity</div>
+            <div class="elec-cols">
+                <div class="elec-col">
+                    <span class="elec-lbl">Current Tariff</span>
+                    <span class="elec-val">{{tariff_name | upcase}} &mdash; {{tariff_rate}}</span>
+                </div>
+                <div class="elec-col-sep"></div>
+                <div class="elec-col">
+                    <span class="elec-lbl">Current Usage/Cost</span>
+                    <span class="elec-val">{{electricity_kw}} kW &mdash; {{electricity_cost_ph}}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
