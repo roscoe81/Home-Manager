@@ -49,7 +49,7 @@ The [Environment Monitor](https://github.com/roscoe81/enviro-monitor) captures, 
 The Home Manager subscribes to power and energy readings published by Shelly metering devices over mqtt, making household power and energy consumption available to the rest of the system.
 
 ## TRMNL Information Display
-The Home Manager drives a [TRMNL](https://usetrmnl.com/) e-ink display through TRMNL's custom-plugin API. It publishes a combined view that includes local weather (from the Australian Bureau of Meteorology), upcoming calendar events (via a CalDAV calendar such as iCloud) and electricity tariff / peak-period information.
+The Home Manager drives a [TRMNL](https://usetrmnl.com/) e-ink display through TRMNL's custom-plugin API. It publishes a combined view that includes local weather (from the Australian Bureau of Meteorology), upcoming calendar events (via a CalDAV calendar such as iCloud) and electricity tariff / peak-period information. See [`TRMNL/`](TRMNL/) for the plugin markup, a browser preview, and a field map of how each display variable maps to what the Home Manager pushes.
 
 ## License
 This project is licensed under the MIT License - see the LICENSE.md file for details
