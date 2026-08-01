@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 17.5 Gen (Keep blind thermostat current temp live on every temp-sensor report). Public/sanitised release - replace all <Your ...> placeholders with your own values.
+#Northcliff Home Manager - 17.6 Gen (Restore blind door-override on startup; close-tap fully closes). Public/sanitised release - replace all <Your ...> placeholders with your own values.
 import paho.mqtt.client as mqtt
 import time
 from datetime import datetime, date, timedelta
@@ -187,6 +187,11 @@ class NorthcliffHomeManagerClass(object):
                 door_sensor[name].current_door_opened = parsed_key_states['Door State'][name]
                 door_sensor[name].previous_door_opened = parsed_key_states['Door State'][name]
                 homebridge.update_door_state(name, self.door_sensor_names_locations[name], parsed_key_states['Door State'][name], False)
+                if self.window_blinds_present: # Restore door state into any blind's door-override map, else it stays stuck 'Open' after a restart
+                    restored_door_state = 'Open' if parsed_key_states['Door State'][name] else 'Closed'
+                    for b in self.window_blind_config:
+                        if name in window_blind[b].window_blind_config['blind_doors']:
+                            window_blind[b].window_blind_config['blind_doors'][name]['door_state'] = restored_door_state
         if self.enviro_monitors_present and 'Enviro Max CO2' in parsed_key_states:
             for enviro_name in self.enviro_config:
                 if enviro_name == 'Indoor' and 'CO2' in self.enviro_config[enviro_name]['Device IDs']:
@@ -1551,13 +1556,16 @@ class WindowBlindClass(object):
         return 'Closed'
 
     def change_blind_from_homekit(self, position=None, tilt=None):
-        # HomeKit sends the position and tilt axes as separate messages; update whichever arrived, keep the other,
-        # and combine them into a whole-group state
+        # Position axis = Open (raised) vs Closed (fully down, slats shut); the slat/tilt axis selects Venetian
+        # (slats open while down) vs Closed. HomeKit sends the two axes as separate messages.
         if position is not None:
-            self.hk_position = position
+            if position >= 50:
+                self.hk_position, self.hk_tilt = 100, 90 # Open
+            else:
+                self.hk_position, self.hk_tilt = 0, 0    # A close-tap fully closes (slats shut)
         if tilt is not None:
-            self.hk_tilt = tilt
             self.hk_position = 0 # Choosing a slat angle implies the blind is lowered
+            self.hk_tilt = tilt  # 90 = Venetian (slats open), 0 = Closed (slats shut)
         self.change_blind_position(self._pos_tilt_to_status(self.hk_position, self.hk_tilt))
 
     def change_blind_position(self, blind_position):
