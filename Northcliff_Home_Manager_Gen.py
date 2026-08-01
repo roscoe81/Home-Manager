@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 17.4 Gen (Fix Calendar bug in TRMNL). Public/sanitised release - replace all <Your ...> placeholders with your own values.
+#Northcliff Home Manager - 17.5 Gen (Keep blind thermostat current temp live on every temp-sensor report). Public/sanitised release - replace all <Your ...> placeholders with your own values.
 import paho.mqtt.client as mqtt
 import time
 from datetime import datetime, date, timedelta
@@ -864,12 +864,22 @@ class MultisensorClass(object):
             for blind in mgr.window_blind_config:
                 if self.name == mgr.window_blind_config[blind]['light sensor']:
                     self.blind_sensor = {'Blind Control': True, 'Blind Name': blind}
+        # Check the blind config to see if this sensor's temperature reading feeds a blind's thermostats
+        self.blind_temp_sensor = {'Blind Control': False, 'Blind Name': ''}
+        if mgr.window_blinds_present:
+            for blind in mgr.window_blind_config:
+                if self.name == mgr.window_blind_config[blind]['temp sensor']:
+                    self.blind_temp_sensor = {'Blind Control': True, 'Blind Name': blind}
 
     def process_temperature_humidity(self, parsed_json):
         temperature = float(parsed_json['svalue1'])
         if temperature != self.sensor_types_with_value['Temperature']:
             self.sensor_types_with_value['Temperature'] = temperature
             homebridge.update_temperature(self.name, temperature)
+            # Keep the blind thermostats' current temperature live so they self-heal after a
+            # Homebridge restart / tile re-add, without triggering the blind-movement algorithm
+            if self.blind_temp_sensor['Blind Control']:
+                homebridge.update_blind_current_temps(self.blind_temp_sensor['Blind Name'], temperature)
         humidity = int(parsed_json['svalue2'])
         if abs(humidity - self.sensor_types_with_value['Humidity']) >= 2:
             self.sensor_types_with_value['Humidity'] = humidity
