@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 17.6 Gen (Restore blind door-override on startup; close-tap fully closes). Public/sanitised release - replace all <Your ...> placeholders with your own values.
+#Northcliff Home Manager - 17.7 Gen (Add PowerView Breeze scene tiles: latched WindowCovering buttons, cleared by their shutter tiles, state persisted across restarts). Public/sanitised release - replace all <Your ...> placeholders with your own values.
 import paho.mqtt.client as mqtt
 import time
 from datetime import datetime, date, timedelta
@@ -93,6 +93,13 @@ class NorthcliffHomeManagerClass(object):
         self.call_control_blinds = {'State': False, 'Blind': '', 'Blind_position': ''}
         self.auto_blind_override_changed = {'Changed': False, 'Blind': '', 'State': False}
         self.blind_control_door_changed = {'State': False, 'Blind': '', 'Changed': False}
+        # PowerView 'Breeze' WindowCovering tiles - a latched scene activator; only its shutter tile can turn it off. No Dynalite involvement
+        self.breeze_scene_buttons = {
+            'Study Breeze': {'scene': 'Study Breeze', 'shutter': 'Study Shutters', 'active': False},
+            'North Breeze': {'scene': 'North Breeze', 'shutter': 'North Shutters', 'active': False},
+            'South Breeze': {'scene': 'South Breeze', 'shutter': 'South Shutters', 'active': False},
+        }  # tile name -> {PowerView scene, the shutter tile that clears it, current active state}
+        self.breeze_shutter_to_button = {c['shutter']: n for n, c in self.breeze_scene_buttons.items()}  # reverse: shutter tile -> breeze tile
                                
     def on_connect(self, client, userdata, flags, reason_code, properties):
         # Sets up the mqtt subscriptions. Subscribing in on_connect() means that if we lose the connection and reconnect then subscriptions will be renewed.
@@ -174,6 +181,7 @@ class NorthcliffHomeManagerClass(object):
             key_state_log['Blind High Temp'] = {b: window_blind[b].window_blind_config['high_temp_threshold'] for b in self.window_blind_config}
             key_state_log['Blind Low Temp'] = {b: window_blind[b].window_blind_config['low_temp_threshold'] for b in self.window_blind_config}
             key_state_log['Blind Auto Override'] = {b: window_blind[b].auto_override for b in self.window_blind_config}
+        key_state_log['Breeze Active'] = {name: self.breeze_scene_buttons[name]['active'] for name in self.breeze_scene_buttons}
         with open(self.key_state_log_file_name, 'w') as f:
             f.write(json.dumps(key_state_log))   
 
@@ -212,6 +220,12 @@ class NorthcliffHomeManagerClass(object):
                 homebridge.update_blind_status(b, window_blind[b].window_blind_config)
                 homebridge.update_blind_target_temps(b, parsed_key_states['Blind High Temp'][b], parsed_key_states['Blind Low Temp'][b])
                 homebridge.set_auto_blind_override_button(b, parsed_key_states['Blind Auto Override'][b])
+        if 'Breeze Active' in parsed_key_states:
+            for name in parsed_key_states['Breeze Active']:
+                if name in self.breeze_scene_buttons:
+                    active = parsed_key_states['Breeze Active'][name]
+                    self.breeze_scene_buttons[name]['active'] = active
+                    homebridge._set_breeze_position(name, 100 if active else 0) # Reflect the restored state onto the HomeKit tile
         if self.enviro_monitors_present:
             homebridge.reset_enviro_wind()
 
@@ -327,6 +341,10 @@ class HomebridgeClass(object):
             self.process_garage_door_button(parsed_json)
         elif mgr.window_blinds_present and parsed_json['name'] in mgr.window_blind_config:
             self.process_blind_button(parsed_json)
+        elif parsed_json['name'] in mgr.breeze_scene_buttons:
+            self.process_breeze_scene_button(parsed_json)
+        elif parsed_json['name'] in mgr.breeze_shutter_to_button:
+            self.process_breeze_shutter_press(parsed_json)
         elif 'Towels' in parsed_json['name'] or 'Floor' in parsed_json['name'] or 'Window' in parsed_json['name'] or 'Shutters' in parsed_json['name'] or 'Coffee' in parsed_json['name']:
             print(parsed_json['name'], "Button Pressed. Message ignored")
         elif parsed_json['name'] == self.enviro_wind_format['name']:
@@ -358,10 +376,63 @@ class HomebridgeClass(object):
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         homebridge_json['characteristic'] = 'RotationSpeed'
         homebridge_json['value'] = self.enviro_wind_state['Wind Speed']
-        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))  
+        client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
         homebridge_json['characteristic'] = 'RotationDirection'
         homebridge_json['value'] = self.enviro_wind_state['Direction']
         client.publish(self.outgoing_mqtt_topic, json.dumps(homebridge_json))
+
+    def process_breeze_scene_button(self, parsed_json): # Latched Breeze tile: activate on the first press, ignore presses while active
+        if parsed_json.get('characteristic') != 'TargetPosition':
+            return
+        cfg = mgr.breeze_scene_buttons[parsed_json['name']]
+        if cfg['active']:
+            self._set_breeze_position(parsed_json['name'], 100) # Already on - snap back to active, do nothing else
+            return
+        if parsed_json['value'] >= 50: # Going from off to on
+            mgr.print_update("Breeze tile '" + parsed_json['name'] + "' activated - PowerView scene '" + cfg['scene'] + "' on ")
+            self.activate_powerview_scene(cfg['scene'])
+            cfg['active'] = True
+            self._set_breeze_position(parsed_json['name'], 100)
+            mgr.log_key_states("Breeze Tile Activated") # Persist so it survives a restart
+        else: # Was already off; keep it off
+            self._set_breeze_position(parsed_json['name'], 0)
+
+    def process_breeze_shutter_press(self, parsed_json): # Operating a shutter (open or close) clears its Breeze tile
+        if parsed_json.get('characteristic') != 'TargetPosition':
+            return
+        breeze_name = mgr.breeze_shutter_to_button[parsed_json['name']]
+        cfg = mgr.breeze_scene_buttons[breeze_name]
+        if cfg['active']:
+            cfg['active'] = False
+            self._set_breeze_position(breeze_name, 0)
+            mgr.log_key_states("Breeze Tile Cleared") # Persist so it survives a restart
+            mgr.print_update("Shutter '" + parsed_json['name'] + "' operated - turning off Breeze tile '" + breeze_name + "' on ")
+
+    def _set_breeze_position(self, name, position): # Settle a Breeze tile at a position (TargetPosition then CurrentPosition, like the shutters)
+        for characteristic in ('TargetPosition', 'CurrentPosition'):
+            client.publish(self.outgoing_mqtt_topic, json.dumps({'name': name, 'service_name': name,
+                'characteristic': characteristic, 'value': position}))
+
+    def activate_powerview_scene(self, scene_name): # Activate a PowerView Gen 2 scene by name via the hub's local API
+        try:
+            response = requests.get('http://' + mgr.powerview_hub_ip + '/api/scenes', timeout=5)
+            data = response.json()
+            scene_id = None
+            for scene in data.get('sceneData', []):
+                try:
+                    name = base64.b64decode(scene['name']).decode('utf-8')
+                except Exception:
+                    name = scene.get('name', '')
+                if name == scene_name:
+                    scene_id = scene['id']
+                    break
+            if scene_id is None:
+                print('PowerView scene not found on hub:', scene_name)
+                return
+            requests.get('http://' + mgr.powerview_hub_ip + '/api/scenes', params={'sceneId': scene_id}, timeout=5)
+            mgr.print_update("Activated PowerView scene '" + scene_name + "' (id " + str(scene_id) + ") on ")
+        except Exception as e:
+            print('PowerView scene activation error:', scene_name, e)
 
     def process_blind_button(self, parsed_json):
         #print('Homebridge: Process Blind Button', parsed_json)
