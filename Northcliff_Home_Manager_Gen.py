@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 17.7 Gen (Add PowerView Breeze scene tiles: latched WindowCovering buttons, cleared by their shutter tiles, state persisted across restarts). Public/sanitised release - replace all <Your ...> placeholders with your own values.
+#Northcliff Home Manager - 17.8 Gen (Also push TRMNL merge_variables to a local self-hosted BYOS server for LAN rendering, in addition to the TRMNL cloud). Public/sanitised release - replace all <Your ...> placeholders with your own values.
 import paho.mqtt.client as mqtt
 import time
 from datetime import datetime, date, timedelta
@@ -1464,6 +1464,14 @@ class TrmnlClass(object):
         variables = self._build_payload(obs, forecast)
         variables = {k: v.replace('\u2013', ' -').replace('\u2014', ' -') if isinstance(v, str) else v
                      for k, v in variables.items()}
+        if getattr(self, "byos_push_url", None):  # Optionally feed a local self-hosted BYOS server that renders the BoM view for a LAN terminal; the cloud push below is unaffected
+            try:
+                requests.post(self.byos_push_url,
+                              data=json.dumps({"merge_variables": variables}, ensure_ascii=True).encode('utf-8'),
+                              headers={"Content-Type": "application/json"}, timeout=30)
+                print("TRMNL: Pushed to local BYOS", self.byos_push_url)
+            except Exception as e:
+                print("TRMNL: BYOS push error:", e)
         url = f"https://trmnl.com/api/custom_plugins/{self.plugin_uuid}"
         try:
             response = requests.post(
@@ -1765,6 +1773,7 @@ if __name__ == '__main__': # This is where to overall code kicks off
                                          10: (14, 17), 11: (14, 20), 12: (17, 20)},
                            tariff_rates = {"Off Peak": 0.16588, "Shoulder": 0.28435, "Peak": 0.538516},
                            location = LocationInfo("<Your City>", "<Your Country>", "<Your Timezone e.g. Australia/Sydney>", "<Your Latitude>", "<Your Longitude>"))
+        trmnl.byos_push_url = "http://<Your BYOS Server IP or Name>:2300/push"  # Optional: also render/serve the BoM view from a local self-hosted BYOS server. Leave unset (comment out) to push only to the TRMNL cloud.
     # Create and set up an mqtt instance                             
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, 'home_manager')
     client.on_connect = mgr.on_connect
