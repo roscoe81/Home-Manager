@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 17.8 Gen (Also push TRMNL merge_variables to a local self-hosted BYOS server for LAN rendering, in addition to the TRMNL cloud). Public/sanitised release - replace all <Your ...> placeholders with your own values.
+#Northcliff Home Manager - 17.9 Gen (TRMNL push cadence changed to 0, 15, 30 and 45 minutes past the hour, from the cloud-legacy 1, 16, 31, 46). Public/sanitised release - replace all <Your ...> placeholders with your own values.
 import paho.mqtt.client as mqtt
 import time
 from datetime import datetime, date, timedelta
@@ -263,7 +263,7 @@ class NorthcliffHomeManagerClass(object):
                             previous_luftdaten_capture_time = time.time()
                 if self.trmnl_present:
                     now = datetime.now()
-                    if now.minute in (1, 16, 31, 46) and time.time() - self.trmnl_update_time >= 120: # Pushes updates one minute past hour and half hour
+                    if now.minute in (0, 15, 30, 45) and time.time() - self.trmnl_update_time >= 120: # Pushes updates on the hour and every quarter hour
                         trmnl.push()
                         self.trmnl_update_time = time.time()
                 if self.window_blinds_present:
