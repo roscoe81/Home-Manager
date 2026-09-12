@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 17.12 Gen (legacy trmnl.com cloud push now OFF by default via enable_cloud_push, pushes only to local BYOS; TRMNL shows per-location air quality (Combined AQI Text for front/rear/kitchen) under the Rain-since-9am badge, and the TRMNL X adds a Local Outlook strip with the Indoor Enviro Monitor's barometer forecast + 3-hour change; TRMNL display selector: trmnl_type ="OG"/"X"/"both" chosen at TrmnlClass setup maps to the BYOS port for the standard TRMNL/OG :2300 and/or the TRMNL X :2301; calendar now carries locations and a Today+Tomorrow set for the X). Public/sanitised release - replace all <Your ...> placeholders with your own values.
+#Northcliff Home Manager - 17.14 Gen (OG TRMNL calendar shows today's upcoming events only with locations, up to 8, Rain-since-9am dropped from the OG for room; TRMNL BoM and calendar fetches cache their last good result and reuse it when a fetch fails, so panels don't blank; legacy trmnl.com cloud push now OFF by default via enable_cloud_push, pushes only to local BYOS; TRMNL shows per-location air quality (Combined AQI Text for front/rear/kitchen) under the Rain-since-9am badge, and the TRMNL X adds a Local Outlook strip with the Indoor Enviro Monitor's barometer forecast + 3-hour change; TRMNL display selector: trmnl_type ="OG"/"X"/"both" chosen at TrmnlClass setup maps to the BYOS port for the standard TRMNL/OG :2300 and/or the TRMNL X :2301; calendar now carries locations and a Today+Tomorrow set for the X). Public/sanitised release - replace all <Your ...> placeholders with your own values.
 import paho.mqtt.client as mqtt
 import time
 from datetime import datetime, date, timedelta
@@ -1278,6 +1278,8 @@ class TrmnlClass(object):
         self.byos_host = byos_host
         self.byos_push_url = self._byos_urls(trmnl_type, byos_host)
         self.enable_cloud_push = enable_cloud_push
+        self._bom_cache = {}   # last good BoM data per endpoint, reused if a fetch fails (e.g. a DNS blip)
+        self._cal_cache = {}   # last good calendar events per day_offset, reused if a fetch fails
 
     def _byos_urls(self, trmnl_type, byos_host):
         """Map trmnl_type ("OG"|"X"|"both") + byos_host to the BYOS push URL(s). Returns a list, or None."""
@@ -1297,13 +1299,20 @@ class TrmnlClass(object):
         url = f"https://api.weather.bom.gov.au/v1/locations/{self.geohash}/{endpoint}"
         weather_headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
                                               "Accept": "application/json", "Referer": "https://www.bom.gov.au/"}
+        empty = {} if endpoint == "observations" else []
         try:
             response = requests.get(url, headers=weather_headers, timeout=30)
             response.raise_for_status()
-            return response.json().get("data", {} if endpoint == "observations" else [])
+            data = response.json().get("data", empty)
+            self._bom_cache[endpoint] = data   # remember the last good result
+            return data
         except Exception as e:
+            cached = self._bom_cache.get(endpoint)
+            if cached is not None:
+                print(f"TRMNL: BOM fetch error ({endpoint}); using last cached data:", e)
+                return cached
             print("TRMNL: BOM fetch error:", e)
-            return {} if endpoint == "observations" else []
+            return empty
 
     def _get_tariff(self):
         dt = datetime.now()
@@ -1387,8 +1396,18 @@ class TrmnlClass(object):
                     print(f'TRMNL: Skipping calendar event: {ev_ex}')
                     continue
             result.sort(key=lambda e: e['_sk'])
-            return [{'time': e['time'], 'title': e['title'], 'loc': e['loc']} for e in result[:limit]]
+            if day_offset == 0:
+                # For today, drop events that have already started (keep all-day and still-upcoming),
+                # so the calendar shows only what's still to come, not the whole day.
+                result = [e for e in result if e['_sk'][0] == 0 or e['_sk'][1] >= now_local]
+            events_out = [{'time': e['time'], 'title': e['title'], 'loc': e['loc']} for e in result[:limit]]
+            self._cal_cache[day_offset] = events_out   # remember the last good fetch for this day
+            return events_out
         except Exception as ex:
+            cached = self._cal_cache.get(day_offset)
+            if cached is not None:
+                print(f'TRMNL: Calendar fetch error (day_offset={day_offset}); using last cached events: {ex}')
+                return cached
             print(f'TRMNL: Calendar fetch error: {ex}')
             return []
 
@@ -1505,15 +1524,17 @@ class TrmnlClass(object):
         # display(s) byos_push_url targets. Fetching tomorrow is one extra cheap CalDAV query.
         tz = pytz.timezone(self.caldav_timezone)
         now_local = datetime.now(tz)
-        today_events    = self._get_calendar_events(day_offset=0, limit=5)
+        OG_CAL_SLOTS = 8
+        today_events    = self._get_calendar_events(day_offset=0, limit=OG_CAL_SLOTS)
         tomorrow_events = self._get_calendar_events(day_offset=1, limit=4)
-        # --- Legacy OG fields: today's events, cal_0..4 ---
+        # --- Legacy OG fields: today's upcoming events, cal_0..N with location ---
         cal_events = list(today_events)
-        while len(cal_events) < 5:
+        while len(cal_events) < OG_CAL_SLOTS:
             cal_events.append({'time': '', 'title': '', 'loc': ''})
-        for idx, ev in enumerate(cal_events[:5]):
+        for idx, ev in enumerate(cal_events[:OG_CAL_SLOTS]):
             payload[f'cal_{idx}_time']  = ev['time']
             payload[f'cal_{idx}_title'] = ev['title']
+            payload[f'cal_{idx}_loc']   = ev['loc']
         # --- TRMNL X fields: Today + Tomorrow columns (0..3 each) with locations ---
         payload['today_label']    = 'Today, '    + now_local.strftime('%a %-d %b')
         payload['tomorrow_label'] = 'Tomorrow, ' + (now_local + timedelta(days=1)).strftime('%a %-d %b')
