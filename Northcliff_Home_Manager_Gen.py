@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#Northcliff Home Manager - 17.9 Gen (TRMNL push cadence changed to 0, 15, 30 and 45 minutes past the hour, from the cloud-legacy 1, 16, 31, 46). Public/sanitised release - replace all <Your ...> placeholders with your own values.
+#Northcliff Home Manager - 17.12 Gen (legacy trmnl.com cloud push now OFF by default via enable_cloud_push, pushes only to local BYOS; TRMNL shows per-location air quality (Combined AQI Text for front/rear/kitchen) under the Rain-since-9am badge, and the TRMNL X adds a Local Outlook strip with the Indoor Enviro Monitor's barometer forecast + 3-hour change; TRMNL display selector: trmnl_type ="OG"/"X"/"both" chosen at TrmnlClass setup maps to the BYOS port for the standard TRMNL/OG :2300 and/or the TRMNL X :2301; calendar now carries locations and a Today+Tomorrow set for the X). Public/sanitised release - replace all <Your ...> placeholders with your own values.
 import paho.mqtt.client as mqtt
 import time
 from datetime import datetime, date, timedelta
@@ -1031,10 +1031,15 @@ class EnviroClass(object):
         self.max_CO2 = 0
         self.CO2_threshold = self.air_reading_bands['CO2'][2]
         self.latest = {}
+        self.latest_forecast = {}  # last barometer outlook seen; the monitor only sends 'Forecast' ~every 20 min
         
     def capture_readings(self, source, parsed_json):
         #print('Capturing Enviro Readings', source, parsed_json)
         self.latest = parsed_json
+        # The Enviro Monitor includes 'Forecast' (its barometer outlook + 3-hour change) only about every 20
+        # minutes and then drops it, so cache the last one for the TRMNL display rather than reading self.latest.
+        if isinstance(parsed_json, dict) and parsed_json.get('Forecast'):
+            self.latest_forecast = parsed_json['Forecast']
         if source == 'Luftdaten':
             valid_source = True
             gas_readings = False
@@ -1244,8 +1249,12 @@ class ShellyReadingClass(object):
 
 class TrmnlClass(object):
     
+    # BYOS port per display type. The standard/OG panel renders bom_trmnl_template.html (800x480);
+    # the TRMNL X renders bom_trmnl_x_template.html (1872x1404). Both are served by BYOS on newcomms.
+    BYOS_PORTS = {"OG": 2300, "X": 2301}
+
     def __init__(self, plugin_uuid, api_key, geohash, caldav_url, caldav_user, caldav_pass, caldav_calendar, caldav_timezone,
-                 peak_hours, tariff_rates, location):
+                 peak_hours, tariff_rates, location, trmnl_type="OG", byos_host=None, enable_cloud_push=False):
         print("Started TRMNL Class")
         self.plugin_uuid = plugin_uuid
         self.api_key = api_key
@@ -1258,6 +1267,31 @@ class TrmnlClass(object):
         self.peak_hours = peak_hours
         self.tariff_rates = tariff_rates
         self.location = location
+        # Which self-hosted BYOS display(s) to feed, chosen here at setup:
+        #   trmnl_type = "OG"   -> the standard TRMNL / OG panel  (BYOS :2300)
+        #   trmnl_type = "X"    -> the TRMNL X panel              (BYOS :2301)
+        #   trmnl_type = "both" -> feed both (useful during the OG->X transition)
+        # byos_host is the BYOS base URL, e.g. "http://192.168.1.50". None = don't push to any local
+        # BYOS. The legacy trmnl.com cloud push in push() is separate and OFF by default; set
+        # enable_cloud_push=True at setup to restore it (both physical panels now run off BYOS).
+        self.trmnl_type = trmnl_type
+        self.byos_host = byos_host
+        self.byos_push_url = self._byos_urls(trmnl_type, byos_host)
+        self.enable_cloud_push = enable_cloud_push
+
+    def _byos_urls(self, trmnl_type, byos_host):
+        """Map trmnl_type ("OG"|"X"|"both") + byos_host to the BYOS push URL(s). Returns a list, or None."""
+        if not byos_host:
+            return None
+        host = byos_host.rstrip("/")
+        types = ["OG", "X"] if str(trmnl_type).lower() == "both" else [str(trmnl_type).upper()]
+        urls = []
+        for t in types:
+            if t not in self.BYOS_PORTS:
+                print(f"TRMNL: Unknown trmnl_type '{t}' - expected OG, X or both; skipping")
+                continue
+            urls.append(f"{host}:{self.BYOS_PORTS[t]}/push")
+        return urls or None
 
     def _fetch_bom(self, endpoint):
         url = f"https://api.weather.bom.gov.au/v1/locations/{self.geohash}/{endpoint}"
@@ -1305,8 +1339,9 @@ class TrmnlClass(object):
                 fixed.append(line)
         return '\r\n'.join(fixed)
         
-    def _get_calendar_events(self):
-        """Return up to 5 of today's events as [{'time': str, 'title': str}, ...]."""
+    def _get_calendar_events(self, day_offset=0, limit=5):
+        """Return up to `limit` events for the day `day_offset` days from today (0=today, 1=tomorrow)
+        as [{'time': str, 'title': str, 'loc': str}, ...]. `loc` is the event LOCATION ('' if none)."""
         tz = pytz.timezone(self.caldav_timezone)
         try:
             client = caldav.DAVClient(url=self.caldav_url, username=self.caldav_user, password=self.caldav_pass)
@@ -1320,9 +1355,9 @@ class TrmnlClass(object):
                 print(f'TRMNL: Calendar "{self.caldav_calendar}" not found')
                 return []
             now_local   = datetime.now(tz)
-            today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-            today_end   = today_start + timedelta(days=1)
-            events = target_cal.search(start=today_start, end=today_end, event=True, expand=True)
+            day_start   = now_local.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=day_offset)
+            day_end     = day_start + timedelta(days=1)
+            events = target_cal.search(start=day_start, end=day_end, event=True, expand=True)
             result = []
             for event in events:
                 try:
@@ -1335,6 +1370,8 @@ class TrmnlClass(object):
                                             auth=(self.caldav_user, self.caldav_pass), timeout=10)
                         vevent = vobject.readOne(self._sanitize_ics(resp.text)).vevent
                     summary = str(vevent.summary.value) if hasattr(vevent, 'summary') else ''
+                    location = str(vevent.location.value) if hasattr(vevent, 'location') else ''
+                    location = location.splitlines()[0].strip() if location else ''  # first line only (iCloud stores multi-line addresses)
                     dtstart = vevent.dtstart.value
                     if isinstance(dtstart, date) and not isinstance(dtstart, datetime):
                         time_str = 'All day'
@@ -1345,12 +1382,12 @@ class TrmnlClass(object):
                         dtstart  = dtstart.astimezone(tz)
                         time_str = dtstart.strftime('%-I:%M %p')
                         sort_key = (1, dtstart)
-                    result.append({'time': time_str, 'title': summary, '_sk': sort_key})
+                    result.append({'time': time_str, 'title': summary, 'loc': location, '_sk': sort_key})
                 except Exception as ev_ex:
                     print(f'TRMNL: Skipping calendar event: {ev_ex}')
                     continue
             result.sort(key=lambda e: e['_sk'])
-            return [{'time': e['time'], 'title': e['title']} for e in result[:5]]
+            return [{'time': e['time'], 'title': e['title'], 'loc': e['loc']} for e in result[:limit]]
         except Exception as ex:
             print(f'TRMNL: Calendar fetch error: {ex}')
             return []
@@ -1413,6 +1450,13 @@ class TrmnlClass(object):
         front_balcony = enviro_monitor['Front Outdoor'].latest if mgr.enviro_monitors_present else {}
         rear_balcony  = enviro_monitor['Outdoor'].latest       if mgr.enviro_monitors_present else {}
         kitchen       = enviro_monitor['Indoor'].latest        if mgr.enviro_monitors_present else {}
+        # Indoor unit's cached barometer outlook (forecast text + 3-hour change) supplements the BoM forecast
+        # on the TRMNL X. The monitor sends this only ~every 20 min, so read the cached copy (capture_readings).
+        kitchen_outlook = enviro_monitor['Indoor'].latest_forecast if mgr.enviro_monitors_present else {}
+        outlook_valid = bool(kitchen_outlook.get('Valid')) if isinstance(kitchen_outlook, dict) else False
+        outlook_text = kitchen_outlook.get('Forecast', '').replace('\n', ' ').strip() if outlook_valid else ''
+        outlook_change = kitchen_outlook.get('3 Hour Change') if outlook_valid else None
+        outlook_change_str = f"{outlook_change:+.1f} hPa/3h" if isinstance(outlook_change, (int, float)) else ''
         elec_kw = shelly.total_power / 1000 if mgr.shelly_power_monitor_present else None
         elec_cost_ph = elec_kw * tariff_rate if elec_kw is not None else None
         payload = {
@@ -1442,6 +1486,11 @@ class TrmnlClass(object):
             "kitchen_humidity": self._round0(self._extract(kitchen, "Hum")),
             "kitchen_dewpoint": self._extract(kitchen, "Dew"),
             "kitchen_pm25": self._extract(kitchen, "P2.5"),
+            "front_balcony_aqi": self._extract(front_balcony, "Combined AQI Text"),
+            "rear_balcony_aqi": self._extract(rear_balcony, "Combined AQI Text"),
+            "kitchen_aqi": self._extract(kitchen, "Combined AQI Text"),
+            "kitchen_forecast_text": outlook_text,
+            "kitchen_baro_change": outlook_change_str,
             "electricity_kw": f"{elec_kw:.2f}" if elec_kw is not None else "–",
             "electricity_cost_ph": f"${elec_cost_ph:.2f}/hr" if elec_cost_ph is not None else "–",
         }
@@ -1450,12 +1499,32 @@ class TrmnlClass(object):
             payload[f"h{i}_chance"] = h["chance"]
             payload[f"h{i}_amount"] = h["amount"]
             payload[f"h{i}_temp"] = h["temp"]
-        cal_events = self._get_calendar_events()
+        # One combined payload feeds BOTH templates: the OG (800x480) reads the legacy cal_0..4_* fields
+        # for today only; the TRMNL X (1872x1404) reads the today_*/tomorrow_* Today+Tomorrow calendar.
+        # Each template simply ignores the fields it doesn't use, so this is safe regardless of which
+        # display(s) byos_push_url targets. Fetching tomorrow is one extra cheap CalDAV query.
+        tz = pytz.timezone(self.caldav_timezone)
+        now_local = datetime.now(tz)
+        today_events    = self._get_calendar_events(day_offset=0, limit=5)
+        tomorrow_events = self._get_calendar_events(day_offset=1, limit=4)
+        # --- Legacy OG fields: today's events, cal_0..4 ---
+        cal_events = list(today_events)
         while len(cal_events) < 5:
-            cal_events.append({'time': '', 'title': ''})
-        for idx, ev in enumerate(cal_events):
+            cal_events.append({'time': '', 'title': '', 'loc': ''})
+        for idx, ev in enumerate(cal_events[:5]):
             payload[f'cal_{idx}_time']  = ev['time']
             payload[f'cal_{idx}_title'] = ev['title']
+        # --- TRMNL X fields: Today + Tomorrow columns (0..3 each) with locations ---
+        payload['today_label']    = 'Today, '    + now_local.strftime('%a %-d %b')
+        payload['tomorrow_label'] = 'Tomorrow, ' + (now_local + timedelta(days=1)).strftime('%a %-d %b')
+        for prefix, evs in (('today', today_events), ('tomorrow', tomorrow_events)):
+            padded = list(evs)
+            while len(padded) < 4:
+                padded.append({'time': '', 'title': '', 'loc': ''})
+            for idx, ev in enumerate(padded[:4]):
+                payload[f'{prefix}_{idx}_time']  = ev['time']
+                payload[f'{prefix}_{idx}_title'] = ev['title']
+                payload[f'{prefix}_{idx}_loc']   = ev['loc']
         return payload
 
     def push(self):
@@ -1464,28 +1533,40 @@ class TrmnlClass(object):
         variables = self._build_payload(obs, forecast)
         variables = {k: v.replace('\u2013', ' -').replace('\u2014', ' -') if isinstance(v, str) else v
                      for k, v in variables.items()}
-        if getattr(self, "byos_push_url", None):  # Optionally feed a local self-hosted BYOS server that renders the BoM view for a LAN terminal; the cloud push below is unaffected
+        # Optionally feed one or more local self-hosted BYOS servers that render the BoM view for LAN
+        # terminals; the cloud push below is unaffected. byos_push_url may be a single URL (str) or a
+        # list of URLs — e.g. the OG (:2300) and/or the TRMNL X (:2301). This list IS the display
+        # selector: keep the URL(s) for the display(s) you want, comment out the rest.
+        byos_urls = getattr(self, "byos_push_url", None)
+        if byos_urls:
+            if isinstance(byos_urls, str):
+                byos_urls = [byos_urls]
+            _byos_bytes = json.dumps({"merge_variables": variables}, ensure_ascii=True).encode('utf-8')
+            for _u in byos_urls:
+                try:
+                    requests.post(_u, data=_byos_bytes,
+                                  headers={"Content-Type": "application/json"}, timeout=30)
+                    print("TRMNL: Pushed to local BYOS", _u)
+                except Exception as e:
+                    print("TRMNL: BYOS push error (%s):" % _u, e)
+        # Cloud push (OG-only legacy) - DISABLED by default (enable_cloud_push=False). Both physical panels
+        # now run off the local BYOS above, so the trmnl.com cloud plugin is redundant; skipping it also
+        # avoids a full traceback in the log whenever the host briefly can't resolve trmnl.com. Set
+        # enable_cloud_push=True at TrmnlClass setup to restore it (posts to the one plugin_uuid, OG 800x480
+        # layout only; the TRMNL X has no cloud markup).
+        if self.enable_cloud_push and self.plugin_uuid:
+            url = f"https://trmnl.com/api/custom_plugins/{self.plugin_uuid}"
             try:
-                requests.post(self.byos_push_url,
-                              data=json.dumps({"merge_variables": variables}, ensure_ascii=True).encode('utf-8'),
-                              headers={"Content-Type": "application/json"}, timeout=30)
-                print("TRMNL: Pushed to local BYOS", self.byos_push_url)
+                response = requests.post(
+                    url,
+                    data=json.dumps({"merge_variables": variables}, ensure_ascii=True).encode('utf-8'),
+                    headers={"Authorization": f"Bearer {self.api_key}",
+                             "Content-Type": "application/json"},
+                    timeout=30
+                )
+                print(f"TRMNL: Pushed to cloud (HTTP {response.status_code})")
             except Exception as e:
-                print("TRMNL: BYOS push error:", e)
-        url = f"https://trmnl.com/api/custom_plugins/{self.plugin_uuid}"
-        try:
-            response = requests.post(
-                url,
-                data=json.dumps({"merge_variables": variables}, ensure_ascii=True).encode('utf-8'),
-                headers={"Authorization": f"Bearer {self.api_key}",
-                         "Content-Type": "application/json"},
-                timeout=30
-            )
-            print(f"TRMNL: Pushed (HTTP {response.status_code})")
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print("TRMNL: Push error:", e)
+                print("TRMNL: Cloud push error:", e)
                     
 class WindowBlindClass(object):
     # Reinstated from Home Manager 14.2. The per-blind Somfy choreography has been collapsed to whole-group
@@ -1767,13 +1848,19 @@ if __name__ == '__main__': # This is where to overall code kicks off
         shelly = ShellyReadingClass()
     if mgr.trmnl_present:
         # Create TRMNL Weather Display instance
+        # Display selection is made here at setup (like tariff_rates, location, etc.):
+        #   trmnl_type = "OG"   -> the standard TRMNL / OG panel   (BYOS :2300)
+        #   trmnl_type = "X"    -> the TRMNL X panel               (BYOS :2301)
+        #   trmnl_type = "both" -> feed both (during the OG->X transition)
+        # byos_host is the BYOS base URL; leave it None (or omit) to push only to the TRMNL cloud.
         trmnl = TrmnlClass(plugin_uuid="<Your TRMNL Plugin UUID>", api_key="<Your TRMNL API Key>", geohash="<Your BOM Geohash>", caldav_url='https://caldav.icloud.com/', caldav_user='<Your CalDAV User>',
                            caldav_pass='<Your CalDAV App-Specific Password>', caldav_calendar='<Your CalDAV Calendar Name>', caldav_timezone='<Your Timezone e.g. Australia/Sydney>',
                            peak_hours = {1: (14, 20), 2: (14, 20), 3: (14, 20), 4: None, 5: None, 6: (17, 21), 7: (17, 21), 8: (17, 21), 9: None,
                                          10: (14, 17), 11: (14, 20), 12: (17, 20)},
                            tariff_rates = {"Off Peak": 0.16588, "Shoulder": 0.28435, "Peak": 0.538516},
-                           location = LocationInfo("<Your City>", "<Your Country>", "<Your Timezone e.g. Australia/Sydney>", "<Your Latitude>", "<Your Longitude>"))
-        trmnl.byos_push_url = "http://<Your BYOS Server IP or Name>:2300/push"  # Optional: also render/serve the BoM view from a local self-hosted BYOS server. Leave unset (comment out) to push only to the TRMNL cloud.
+                           location = LocationInfo("<Your City>", "<Your Country>", "<Your Timezone e.g. Australia/Sydney>", "<Your Latitude>", "<Your Longitude>"),
+                           trmnl_type = "OG",                                  # "OG", "X" or "both"
+                           byos_host = "http://<Your BYOS Server IP or Name>") # e.g. "http://192.168.1.50"; None = cloud only
     # Create and set up an mqtt instance                             
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, 'home_manager')
     client.on_connect = mgr.on_connect
